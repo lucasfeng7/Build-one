@@ -25,26 +25,51 @@ def connect() -> object:
 
     Side effect: overwrites models.SW_* constants with values from the live
     type library so the rest of the package is value-correct regardless of
-    SolidWorks version drift.
+    SolidWorks version drift.  Falls back to late-binding Dispatch when the
+    type library cache cannot be built (e.g. first run without makepy).
     """
     try:
         import pythoncom  # noqa: F401
-        from win32com.client import constants, gencache
+        import win32com.client
+        from win32com.client import gencache
     except ImportError as e:
         raise SolidWorksUnavailable(
             "pywin32 not available — this tool only runs on Windows with SolidWorks installed."
         ) from e
 
+    sw = None
+    constants = None
+
+    # Attempt early-binding first so _sync_constants can read the type library.
     try:
         sw = gencache.EnsureDispatch("SldWorks.Application")
-    except Exception as e:
-        raise SolidWorksUnavailable(f"Could not dispatch SldWorks.Application: {e}") from e
+        constants = win32com.client.constants
+    except Exception:
+        pass
 
-    _sync_constants(constants)
+    # Fall back to late-binding if the type library cache couldn't be built.
+    if sw is None:
+        try:
+            sw = win32com.client.Dispatch("SldWorks.Application")
+        except Exception as e:
+            raise SolidWorksUnavailable(f"Could not dispatch SldWorks.Application: {e}") from e
+
+    if constants is not None:
+        _sync_constants(constants)
+    # If constants is None we keep the SDK defaults hardcoded in models.py.
 
     sw.Visible = True
-    sw.SetUserPreferenceToggle(int(constants.swDisableMessages), True)
+    _disable_messages(sw, constants)
     return sw
+
+
+def _disable_messages(sw, constants) -> None:
+    """Suppress SolidWorks UI prompts; tolerates missing constants."""
+    try:
+        toggle = int(constants.swDisableMessages) if constants is not None else 263
+        sw.SetUserPreferenceToggle(toggle, True)
+    except Exception:
+        pass
 
 
 def _sync_constants(constants) -> None:
