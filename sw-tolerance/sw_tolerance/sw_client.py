@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 
 from . import models
+from .com import call
 
 
 class SolidWorksUnavailable(RuntimeError):
