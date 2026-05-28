@@ -20,6 +20,10 @@ SW_LINEAR_DIM: int = 8
 SW_HOR_LINEAR_DIM: int = 6
 SW_VERT_LINEAR_DIM: int = 11
 
+# swUserPreferenceToggle_e.swDisableMessages — used only in the late-binding
+# fallback path in sw_client.connect(); early-binding reads it from constants.
+SW_DISABLE_MESSAGES: int = 263
+
 LINEAR_DIM_TYPES: Final = frozenset({SW_LINEAR_DIM, SW_HOR_LINEAR_DIM, SW_VERT_LINEAR_DIM})
 
 

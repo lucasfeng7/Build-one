@@ -1,8 +1,9 @@
 """COM connection management for SolidWorks."""
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Optional
 
 from . import models
 
@@ -39,24 +40,35 @@ def connect() -> object:
 
     sw = None
     constants = None
+    ensure_error: Optional[Exception] = None
 
-    # Attempt early-binding first so _sync_constants can read the type library.
     try:
         sw = gencache.EnsureDispatch("SldWorks.Application")
         constants = win32com.client.constants
-    except Exception:
-        pass
+    except Exception as e:
+        ensure_error = e
 
-    # Fall back to late-binding if the type library cache couldn't be built.
     if sw is None:
         try:
             sw = win32com.client.Dispatch("SldWorks.Application")
         except Exception as e:
-            raise SolidWorksUnavailable(f"Could not dispatch SldWorks.Application: {e}") from e
+            raise SolidWorksUnavailable(
+                f"Could not dispatch SldWorks.Application: {e} "
+                f"(EnsureDispatch also failed: {ensure_error})"
+            ) from e
+        # Late-binding succeeded but live constants aren't available, so the
+        # SW 2020 SDK defaults in models.py are in play. Tell the user so
+        # version drift (e.g. SW 2024 enum changes) isn't silent.
+        print(
+            f"warning: EnsureDispatch failed ({ensure_error}); "
+            "falling back to late-binding with SW 2020 SDK enum defaults. "
+            "Run `python -m win32com.client.makepy SldWorks.Application` "
+            "to enable live constant sync.",
+            file=sys.stderr,
+        )
 
     if constants is not None:
         _sync_constants(constants)
-    # If constants is None we keep the SDK defaults hardcoded in models.py.
 
     sw.Visible = True
     _disable_messages(sw, constants)
@@ -66,7 +78,11 @@ def connect() -> object:
 def _disable_messages(sw, constants) -> None:
     """Suppress SolidWorks UI prompts; tolerates missing constants."""
     try:
-        toggle = int(constants.swDisableMessages) if constants is not None else 263
+        toggle = (
+            int(constants.swDisableMessages)
+            if constants is not None
+            else models.SW_DISABLE_MESSAGES
+        )
         sw.SetUserPreferenceToggle(toggle, True)
     except Exception:
         pass
