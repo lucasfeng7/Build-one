@@ -14,15 +14,41 @@ class SaveFailed(RuntimeError):
 # by name across type library variants.
 _SW_SAVE_AS_SILENT: int = 1
 
+# swSetValueInConfiguration_e.swSetValue_InThisConfiguration
+_SW_SET_VALUE_THIS_CONFIG: int = 1
+
 
 def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
     """Mutate a live IDimensionTolerance to the given Tolerance.
 
-    Setting tol_obj.Type must happen BEFORE SetValues2 — SetValues2 silently
-    no-ops if Type is still swTolNONE. This is the #1 SolidWorks API gotcha.
+    Two SolidWorks API gotchas are encoded here:
+
+    1. tol_obj.Type must be set BEFORE writing values — SetValues2 silently
+       no-ops if Type is still swTolNONE.
+
+    2. IDimensionTolerance::SetValues2 takes FOUR args
+       (MaxValue, MinValue, ConfigurationOption, ConfigurationNames) — calling
+       it with two raises a COM error. SolidWorks stores the lower deviation as
+       a negative value, so the minus magnitude is negated here. SetValues2 is
+       also documented to no-op/return False for single-configuration docs in
+       some releases, so we fall back to the obsolete 2-arg SetValues.
     """
     tol_obj.Type = tolerance.tol_type
-    tol_obj.SetValues2(tolerance.plus_value, tolerance.minus_value)
+
+    max_value = abs(tolerance.plus_value)
+    min_value = -abs(tolerance.minus_value)
+
+    try:
+        ok = tol_obj.SetValues2(
+            max_value, min_value, _SW_SET_VALUE_THIS_CONFIG, "",
+        )
+    except Exception:
+        ok = False
+
+    if not ok:
+        # Obsolete but reliable for single-configuration documents. If this
+        # also fails it raises, and the caller records the dimension as failed.
+        tol_obj.SetValues(max_value, min_value)
 
 
 def rebuild_and_save(model, out_path: str) -> None:
