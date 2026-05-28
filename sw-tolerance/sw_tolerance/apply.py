@@ -1,11 +1,16 @@
 """Write tolerances back to a SolidWorks drawing via COM."""
 from __future__ import annotations
 
+from . import models
 from .models import Tolerance
 
 
 class SaveFailed(RuntimeError):
     """SaveAs3 returned non-zero errors."""
+
+
+class ToleranceWriteFailed(RuntimeError):
+    """SetValues2 returned False — the tolerance was not applied."""
 
 
 # swSaveAsOptions_e.swSaveAsOptions_Silent — hardcoded; not consistently exposed
@@ -18,9 +23,25 @@ def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
 
     Setting tol_obj.Type must happen BEFORE SetValues2 — SetValues2 silently
     no-ops if Type is still swTolNONE. This is the #1 SolidWorks API gotcha.
+
+    SetValues2 takes four arguments: (MinValue, MaxValue, WhichConfigurations,
+    Config_names). All four are required — passing only the values raises a
+    "Parameter not optional" COM error. For a bilateral tolerance the minimum is
+    the lower deviation (negative) and the maximum is the upper deviation
+    (positive), so the stored magnitudes are signed here.
     """
     tol_obj.Type = tolerance.tol_type
-    tol_obj.SetValues2(tolerance.plus_value, tolerance.minus_value)
+    ok = tol_obj.SetValues2(
+        -tolerance.minus_value,
+        tolerance.plus_value,
+        models.SW_SETVALUE_THIS_CONFIG,
+        "",
+    )
+    if not ok:
+        raise ToleranceWriteFailed(
+            "SetValues2 returned False; tolerance not applied "
+            f"(min={-tolerance.minus_value}, max={tolerance.plus_value})"
+        )
 
 
 def rebuild_and_save(model, out_path: str) -> None:

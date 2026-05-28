@@ -20,6 +20,12 @@ SW_LINEAR_DIM: int = 8
 SW_HOR_LINEAR_DIM: int = 6
 SW_VERT_LINEAR_DIM: int = 11
 
+# swSetValueInConfiguration_e.swSetValue_InThisConfiguration — the WhichConfigurations
+# argument required by IDimensionTolerance::SetValues2. Enum order (0-indexed) is
+# NoConfiguration, UseCurrentSetting, InThisConfiguration, InAllConfigurations,
+# InSpecificConfigurations, so InThisConfiguration is 2.
+SW_SETVALUE_THIS_CONFIG: int = 2
+
 LINEAR_DIM_TYPES: Final = frozenset({SW_LINEAR_DIM, SW_HOR_LINEAR_DIM, SW_VERT_LINEAR_DIM})
 
 

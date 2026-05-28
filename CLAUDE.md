@@ -41,7 +41,7 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 
 3. **COM imports are lazy inside functions** (`pythoncom`, `win32com.client`) in `sw_client.py` and `apply.py`. This is why the whole package imports cleanly on macOS for testing. Don't promote them to module-level imports.
 
-4. **Set `tol_obj.Type` BEFORE calling `SetValues2`.** `SetValues2` silently no-ops if `Type` is still `swTolNONE`. This is the single most important SolidWorks API gotcha — `apply.write_tolerance` encodes it and it must stay in that order.
+4. **Set `tol_obj.Type` BEFORE calling `SetValues2`, and call `SetValues2` with all four arguments.** `SetValues2` silently no-ops if `Type` is still `swTolNONE`, and its full signature is `SetValues2(MinValue, MaxValue, WhichConfigurations, Config_names)` — all four are required, so passing only the two values raises a `-2147352561 "Parameter not optional"` COM error. For a bilateral tolerance `MinValue` is the lower deviation (negative) and `MaxValue` the upper deviation (positive); `apply.write_tolerance` signs the stored `Tolerance` magnitudes accordingly and passes `WhichConfigurations = models.SW_SETVALUE_THIS_CONFIG` with `Config_names = ""`. It also treats a `False` return as a failure (`ToleranceWriteFailed`) so a silent no-op is reported as `failed` rather than `applied`. These are the single most important SolidWorks API gotchas — keep the order and the full argument list.
 
 5. **Multi-sheet iteration is explicit** in `extract.py`: it loops `GetSheetNames()` and `ActivateSheet(name)` per sheet. `GetFirstView/GetNextView` only walks the active sheet — don't refactor to a single view walk.
 

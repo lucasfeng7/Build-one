@@ -54,6 +54,7 @@ def _sync_constants(constants) -> None:
     models.SW_LINEAR_DIM = int(constants.swLinearDimension)
     models.SW_HOR_LINEAR_DIM = int(constants.swHorLinearDimension)
     models.SW_VERT_LINEAR_DIM = int(constants.swVertLinearDimension)
+    models.SW_SETVALUE_THIS_CONFIG = int(constants.swSetValue_InThisConfiguration)
     models.LINEAR_DIM_TYPES = frozenset({
         models.SW_LINEAR_DIM,
         models.SW_HOR_LINEAR_DIM,

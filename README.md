@@ -88,6 +88,7 @@ sw-tolerance/
 
 ## Known first-run items
 
+- `IDimensionTolerance::SetValues2` requires all four arguments — `(MinValue, MaxValue, WhichConfigurations, Config_names)`. `apply.write_tolerance` passes a negative min / positive max for the bilateral band, `swSetValue_InThisConfiguration`, and an empty config-name string. SolidWorks has historically returned `False` from `SetValues2` on single-configuration documents; `write_tolerance` surfaces a `False` return as a `failed` record so it's visible in the report rather than silently lost.
 - `ForceRebuild3` is the expected pre-save rebuild call for `IDrawingDoc`; fall back to `EditRebuild5` if it errors at runtime.
 - `is_hole_callout` detection in `extract.py` is currently always `False` — hole-callout failures are caught at apply-time via the per-dim `try/except` and logged with `action: "failed"`. If a cheap COM property for pre-detection turns up, wire it into `_build_feature`.
 
