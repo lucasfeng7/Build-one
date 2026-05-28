@@ -64,7 +64,7 @@ def _build_feature(
 
 def _view_name(view) -> str:
     try:
-        return view.GetName2()
+        return call(view, "GetName2")
     except Exception:
         try:
             return view.Name
@@ -74,7 +74,7 @@ def _view_name(view) -> str:
 
 def get_active_config_name(model) -> str:
     try:
-        cfg = model.GetActiveConfiguration()
+        cfg = call(model, "GetActiveConfiguration")
         return cfg.Name
     except Exception:
         return "<unknown>"

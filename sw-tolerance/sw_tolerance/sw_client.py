@@ -123,5 +123,5 @@ def open_drawing(sw, path: str) -> Iterator[object]:
     try:
         yield model
     finally:
-        title = model.GetTitle()
+        title = call(model, "GetTitle")
         sw.CloseDoc(title)

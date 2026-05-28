@@ -41,6 +41,8 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 
 3. **COM imports are lazy inside functions** (`pythoncom`, `win32com.client`) in `sw_client.py` and `apply.py`. This is why the whole package imports cleanly on macOS for testing. Don't promote them to module-level imports.
 
+   3a. **No-arg COM methods must be invoked via `com.call(obj, "Method")`, never `obj.Method()` directly.** When makepy can't build the type-library cache, `connect()` falls back to late-binding `Dispatch`. Under late binding pywin32 has no type info, so a *no-arg* member (`GetSheetNames`, `GetTitle`, `GetFirstView`, `GetNextView`, `GetNext5`, `GetName2`, `GetActiveConfiguration`, …) is resolved as a property get — `obj.GetSheetNames` already returns the value, and `obj.GetSheetNames()` then raises `'tuple' object is not callable`. `com.call` returns the value as-is under late binding and calls the bound method under early binding. Methods that take **arguments** are unaffected (always real callables) and can be called directly. `com.py` has zero COM imports and is unit-tested on macOS.
+
 4. **Set `tol_obj.Type` BEFORE calling `SetValues2`.** `SetValues2` silently no-ops if `Type` is still `swTolNONE`. This is the single most important SolidWorks API gotcha — `apply.write_tolerance` encodes it and it must stay in that order.
 
 5. **Multi-sheet iteration is explicit** in `extract.py`: it loops `GetSheetNames()` and `ActivateSheet(name)` per sheet. `GetFirstView/GetNextView` only walks the active sheet — don't refactor to a single view walk.
