@@ -12,10 +12,10 @@ All commands are run from `sw-tolerance/`.
 
 | Task | Command |
 |------|---------|
-| Install runtime deps | `pip install -r requirements.txt` |
-| Run CLI | `python tolerance.py <input.slddrw> <output.slddrw>` |
-| Run all tests | `python -m unittest discover tests` |
-| Run a single test | `python -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
+| Install runtime deps | `pip3 install -r requirements.txt` |
+| Run CLI | `python3 tolerance.py <input.slddrw> <output.slddrw>` |
+| Run all tests | `python3 -m unittest discover tests` |
+| Run a single test | `python3 -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
 
 Tests are COM-free and runnable on macOS — they cover `decide.py` only. There is no separate linter/formatter wired up.
 

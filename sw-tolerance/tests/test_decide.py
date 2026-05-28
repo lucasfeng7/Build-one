@@ -1,7 +1,7 @@
 """Unit tests for decide.tolerance_for — COM-free, macOS-runnable.
 
 Run from the project root with:
-    python -m unittest discover tests
+    python3 -m unittest discover tests
 """
 from __future__ import annotations
 

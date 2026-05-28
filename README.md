@@ -18,13 +18,13 @@ The code is developed on macOS but only runs end-to-end on Windows.
 ## Install
 
 ```
-pip install -r sw-tolerance/requirements.txt
+pip3 install -r sw-tolerance/requirements.txt
 ```
 
 ## Run
 
 ```
-python sw-tolerance/tolerance.py <input.slddrw> <output.slddrw>
+python3 sw-tolerance/tolerance.py <input.slddrw> <output.slddrw>
 ```
 
 A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, and `error`.
@@ -55,7 +55,7 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 ## Tests
 
 ```
-cd sw-tolerance && python -m unittest discover tests
+cd sw-tolerance && python3 -m unittest discover tests
 ```
 
 The six decide tests cover the policy on all linear variants, hole callouts, already-toleranced dims, and non-linear dim types — all runnable without SolidWorks.

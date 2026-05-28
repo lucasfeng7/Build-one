@@ -1,6 +1,6 @@
 """CLI: apply bilateral ±0.5 mm tolerances to a SolidWorks drawing.
 
-Usage: python tolerance.py <input.slddrw> <output.slddrw>
+Usage: python3 tolerance.py <input.slddrw> <output.slddrw>
 
 Exit codes:
   0 — all dimensions handled (any combination of applied + skipped)
