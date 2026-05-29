@@ -10,22 +10,33 @@ Opens a SolidWorks drawing, walks every sheet and view, and writes a bilateral �
 
 ## Requirements
 
-- Windows with SolidWorks installed (uses the COM API via pywin32)
-- Python 3.10+
-
-The code is developed on macOS but only runs end-to-end on Windows.
+- Windows 10 or 11
+- SolidWorks installed and licensed (the CLI talks to it over COM via pywin32)
+- Python 3.10+ for Windows (from [python.org](https://www.python.org/downloads/windows/) — tick "Add Python to PATH" during install)
 
 ## Install
 
+Open **Command Prompt** or **PowerShell** in the repo root and run:
+
 ```
-pip3 install -r sw-tolerance/requirements.txt
+pip install -r sw-tolerance\requirements.txt
 ```
+
+If `pip` isn't on your PATH, use `py -m pip install -r sw-tolerance\requirements.txt`.
 
 ## Run
 
 ```
-python3 sw-tolerance/tolerance.py <input.slddrw> <output.slddrw>
+python sw-tolerance\tolerance.py <input.slddrw> <output.slddrw>
 ```
+
+Example:
+
+```
+python sw-tolerance\tolerance.py C:\drawings\bracket.slddrw C:\drawings\bracket_toleranced.slddrw
+```
+
+SolidWorks does not need to be open beforehand — the CLI launches it via COM. The first run after installing pywin32 may take a few seconds longer while it builds the SolidWorks type-library cache.
 
 A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, and `error`.
 
@@ -43,26 +54,27 @@ A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first l
 Three single-purpose modules. `decide` is a pure, COM-free function — the only file that changes when a future ML model lands.
 
 ```
-extract.iter_dimensions(model)   →  yields (displayDim, idim, tol, Feature)
-       │
-decide.tolerance_for(feature)    →  Tolerance | None    ← swap point
-       │
-apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
+extract.iter_dimensions(model)   ->  yields (displayDim, idim, tol, Feature)
+       |
+decide.tolerance_for(feature)    ->  Tolerance | None    <- swap point
+       |
+apply.write_tolerance(dim, tol)  ->  mutates the SW dim via COM
 ```
 
-`decide.py` has zero COM imports so it's unit-testable on macOS.
+`decide.py` has zero COM imports so it can be unit-tested without SolidWorks running.
 
 ## Tests
 
 ```
-cd sw-tolerance && python3 -m unittest discover tests
+cd sw-tolerance
+python -m unittest discover tests
 ```
 
-The six decide tests cover the policy on all linear variants, hole callouts, already-toleranced dims, and non-linear dim types — all runnable without SolidWorks.
+The decide tests cover the policy on all linear variants, hole callouts, already-toleranced dims, and non-linear dim types. They don't touch COM, so they run on any Windows box with Python — no SolidWorks license required.
 
-## Verification on Windows
+## Verification
 
-Drop three fixtures into `sw-tolerance/test_drawings/` and run end-to-end:
+Drop three fixtures into `sw-tolerance\test_drawings\` and run end-to-end against a real SolidWorks install:
 
 - `simple_bracket.slddrw` — single sheet, ~5 linear dims, no existing tolerances. Expected: 5 `applied`, exit 0.
 - `already_toleranced.slddrw` — one dim already toleranced. Expected: 4 `applied`, 1 `skipped`, exit 0.
@@ -73,24 +85,27 @@ After each run, open the output `.slddrw` in SolidWorks, confirm tolerances rend
 ## Layout
 
 ```
-sw-tolerance/
+sw-tolerance\
 ├── tolerance.py             CLI entry: argparse, orchestration, JSONL report
 ├── requirements.txt
-├── sw_tolerance/
+├── sw_tolerance\
 │   ├── models.py            Feature, Tolerance, SW_* constants
 │   ├── decide.py            pure policy — the swap point
 │   ├── sw_client.py         COM connect + open/close lifecycle
-│   ├── extract.py           sheets → views → display dimensions
+│   ├── extract.py           sheets -> views -> display dimensions
 │   └── apply.py             tolerance write, rebuild + SaveAs3
-├── tests/test_decide.py
-└── test_drawings/           drop fixture .slddrw files here
+├── tests\test_decide.py
+└── test_drawings\           drop fixture .slddrw files here
 ```
+
+## Troubleshooting
+
+- **`ImportError: No module named win32com`** — pywin32 didn't install. Re-run `pip install -r sw-tolerance\requirements.txt`, then `python -m pywin32_postinstall -install` if COM still won't bind.
+- **`pywintypes.com_error` on startup** — SolidWorks isn't installed, isn't licensed, or is blocked by another COM client. Open SolidWorks once manually so it registers, then retry.
+- **Stderr warning about "degraded fallback mode"** — `gencache.EnsureDispatch` failed (no makepy cache yet) and the CLI fell back to late-binding `Dispatch`. The run will still complete using hardcoded SW 2020 SDK constants. To clear it, run `python -m win32com.client.makepy` and pick the SolidWorks type library.
+- **`OpenDoc6 failed`** — the input path is wrong, the file is already open in another SolidWorks session, or the drawing references missing parts. Close SolidWorks and retry with an absolute path.
 
 ## Known first-run items
 
 - `ForceRebuild3` is the expected pre-save rebuild call for `IDrawingDoc`; fall back to `EditRebuild5` if it errors at runtime.
 - `is_hole_callout` detection in `extract.py` is currently always `False` — hole-callout failures are caught at apply-time via the per-dim `try/except` and logged with `action: "failed"`. If a cheap COM property for pre-detection turns up, wire it into `_build_feature`.
-
-## Plan and design notes
-
-The full reviewed implementation plan — context, locked decisions, gotchas, and verification — lives at `/Users/lucasfeng/.claude/plans/this-is-my-plan-drifting-sparrow.md`.
