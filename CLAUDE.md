@@ -17,7 +17,7 @@ All commands are run from `sw-tolerance/`.
 | Run all tests | `python3 -m unittest discover tests` |
 | Run a single test | `python3 -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
 
-Tests are COM-free and runnable on macOS — they cover `decide.py` only. There is no separate linter/formatter wired up.
+Tests are COM-free and runnable on macOS — they cover `decide.py`, `com.py`, `apply.write_tolerance`, and `tolerance._validate_paths` (everything that doesn't need a live COM object). There is no separate linter/formatter wired up.
 
 ## Architecture — the big picture
 

@@ -124,5 +124,9 @@ def open_drawing(sw, path: str) -> Iterator[object]:
     try:
         yield model
     finally:
-        title = call(model, "GetTitle")
-        sw.CloseDoc(title)
+        # Cleanup must never mask the real exception from the body, so a failed
+        # GetTitle/CloseDoc is logged rather than raised.
+        try:
+            sw.CloseDoc(call(model, "GetTitle"))
+        except Exception as exc:
+            print(f"warning: failed to close drawing: {exc}", file=sys.stderr)

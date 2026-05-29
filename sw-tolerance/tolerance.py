@@ -61,10 +61,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         with open_drawing(sw, input_abs) as model:
             return _process(model, output_abs, input_abs, report_path)
-    except OpenFailed as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return EXIT_UNRECOVERABLE
-    except SaveFailed as e:
+    except (OpenFailed, SaveFailed) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_UNRECOVERABLE
 
@@ -78,6 +75,12 @@ def _validate_paths(input_path: str, output_path: str) -> int:
         return EXIT_VALIDATION_ERROR
     if os.path.exists(output_path):
         print(f"ERROR: output already exists: {output_path}", file=sys.stderr)
+        return EXIT_VALIDATION_ERROR
+    out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    if not os.path.isdir(out_dir):
+        # Fail here rather than after a full extract/apply/rebuild that SaveAs
+        # would only reject at the very end.
+        print(f"ERROR: output directory does not exist: {out_dir}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
     if os.path.abspath(input_path) == os.path.abspath(output_path):
         print("ERROR: input and output paths must differ", file=sys.stderr)
