@@ -1,10 +1,12 @@
 """COM connection management for SolidWorks."""
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Optional
 
 from . import models
+from .com import call
 
 
 class SolidWorksUnavailable(RuntimeError):
@@ -25,26 +27,66 @@ def connect() -> object:
 
     Side effect: overwrites models.SW_* constants with values from the live
     type library so the rest of the package is value-correct regardless of
-    SolidWorks version drift.
+    SolidWorks version drift.  Falls back to late-binding Dispatch when the
+    type library cache cannot be built (e.g. first run without makepy).
     """
     try:
         import pythoncom  # noqa: F401
-        from win32com.client import constants, gencache
+        import win32com.client
+        from win32com.client import gencache
     except ImportError as e:
         raise SolidWorksUnavailable(
             "pywin32 not available — this tool only runs on Windows with SolidWorks installed."
         ) from e
 
+    sw = None
+    constants = None
+    ensure_error: Optional[Exception] = None
+
     try:
         sw = gencache.EnsureDispatch("SldWorks.Application")
+        constants = win32com.client.constants
     except Exception as e:
-        raise SolidWorksUnavailable(f"Could not dispatch SldWorks.Application: {e}") from e
+        ensure_error = e
 
-    _sync_constants(constants)
+    if sw is None:
+        try:
+            sw = win32com.client.Dispatch("SldWorks.Application")
+        except Exception as e:
+            raise SolidWorksUnavailable(
+                f"Could not dispatch SldWorks.Application: {e} "
+                f"(EnsureDispatch also failed: {ensure_error})"
+            ) from e
+        # Late-binding succeeded but live constants aren't available, so the
+        # SW 2020 SDK defaults in models.py are in play. Tell the user so
+        # version drift (e.g. SW 2024 enum changes) isn't silent.
+        print(
+            f"warning: EnsureDispatch failed ({ensure_error}); "
+            "falling back to late-binding with SW 2020 SDK enum defaults. "
+            "Run `python -m win32com.client.makepy SldWorks.Application` "
+            "to enable live constant sync.",
+            file=sys.stderr,
+        )
+
+    if constants is not None:
+        _sync_constants(constants)
 
     sw.Visible = True
-    sw.SetUserPreferenceToggle(int(constants.swDisableMessages), True)
+    _disable_messages(sw, constants)
     return sw
+
+
+def _disable_messages(sw, constants) -> None:
+    """Suppress SolidWorks UI prompts; tolerates missing constants."""
+    try:
+        toggle = (
+            int(constants.swDisableMessages)
+            if constants is not None
+            else models.SW_DISABLE_MESSAGES
+        )
+        sw.SetUserPreferenceToggle(toggle, True)
+    except Exception:
+        pass
 
 
 def _sync_constants(constants) -> None:
@@ -82,5 +124,5 @@ def open_drawing(sw, path: str) -> Iterator[object]:
     try:
         yield model
     finally:
-        title = model.GetTitle()
+        title = call(model, "GetTitle")
         sw.CloseDoc(title)

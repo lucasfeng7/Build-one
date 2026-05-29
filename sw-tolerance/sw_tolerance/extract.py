@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from typing import Iterator, Optional, Tuple
 
+from .com import call
 from .models import Feature
 
 DimTuple = Tuple[object, object, object, Feature]
@@ -11,7 +12,7 @@ DimTuple = Tuple[object, object, object, Feature]
 
 def iter_dimensions(drawing) -> Iterator[DimTuple]:
     """Yield every display dimension across every sheet of the drawing."""
-    sheet_names = drawing.GetSheetNames()
+    sheet_names = call(drawing, "GetSheetNames")
     if not sheet_names:
         return
     for sheet_name in sheet_names:
@@ -21,23 +22,23 @@ def iter_dimensions(drawing) -> Iterator[DimTuple]:
 
 def _iter_sheet(drawing, sheet_name: str) -> Iterator[DimTuple]:
     # GetFirstView returns the sheet itself; real views start at GetNextView.
-    view = drawing.GetFirstView()
+    view = call(drawing, "GetFirstView")
     if view is None:
         return
-    view = view.GetNextView()
+    view = call(view, "GetNextView")
     while view is not None:
         yield from _iter_view(view, _view_name(view), sheet_name)
-        view = view.GetNextView()
+        view = call(view, "GetNextView")
 
 
 def _iter_view(view, view_name: str, sheet_name: str) -> Iterator[DimTuple]:
-    disp_dim = view.GetFirstDisplayDimension5()
+    disp_dim = call(view, "GetFirstDisplayDimension5")
     while disp_dim is not None:
         built = _build_feature(disp_dim, view_name, sheet_name)
         if built is not None:
             feat, idim, tol = built
             yield disp_dim, idim, tol, feat
-        disp_dim = disp_dim.GetNext5()
+        disp_dim = call(disp_dim, "GetNext5")
 
 
 def _build_feature(
@@ -64,7 +65,7 @@ def _build_feature(
 
 def _view_name(view) -> str:
     try:
-        return view.GetName2()
+        return call(view, "GetName2")
     except Exception:
         try:
             return view.Name
@@ -74,7 +75,7 @@ def _view_name(view) -> str:
 
 def get_active_config_name(model) -> str:
     try:
-        cfg = model.GetActiveConfiguration()
+        cfg = call(model, "GetActiveConfiguration")
         return cfg.Name
     except Exception:
         return "<unknown>"
