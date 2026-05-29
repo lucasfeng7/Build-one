@@ -51,15 +51,27 @@ class WriteToleranceTests(unittest.TestCase):
         write_tolerance(tol, _TOL)
         self.assertEqual(tol.type_set, SW_TOL_BILAT)
 
-    def test_setvalues2_called_with_four_args_and_negative_min(self):
+    def test_setvalues2_called_with_four_args_min_first(self):
         tol = _FakeTol()
         write_tolerance(tol, _TOL)
         self.assertEqual(len(tol.setvalues2_calls), 1)
-        max_value, min_value, config_opt, config_names = tol.setvalues2_calls[0]
-        self.assertAlmostEqual(max_value, 0.0005)
+        # SetValues2 signature is (MinValue, MaxValue, WhichConfigurations,
+        # Config_names) — min comes FIRST.
+        min_value, max_value, config_opt, config_names = tol.setvalues2_calls[0]
         self.assertAlmostEqual(min_value, -0.0005)
+        self.assertAlmostEqual(max_value, 0.0005)
         self.assertEqual(config_opt, 1)
         self.assertEqual(config_names, "")
+
+    def test_asymmetric_tolerance_keeps_min_max_order(self):
+        # Regression guard for the arg-order bug: a symmetric band hides a
+        # swapped (min, max) because |min| == |max|. An asymmetric tolerance
+        # does not — here min must be -0.002 and max +0.001, in that order.
+        tol = _FakeTol()
+        write_tolerance(tol, Tolerance(SW_TOL_BILAT, plus_value=0.001, minus_value=0.002))
+        min_value, max_value, _opt, _names = tol.setvalues2_calls[0]
+        self.assertAlmostEqual(min_value, -0.002)
+        self.assertAlmostEqual(max_value, 0.001)
 
     def test_no_fallback_when_setvalues2_succeeds(self):
         tol = _FakeTol(setvalues2_result=True)
@@ -70,8 +82,9 @@ class WriteToleranceTests(unittest.TestCase):
         tol = _FakeTol(setvalues2_result=False)
         write_tolerance(tol, _TOL)
         self.assertEqual(len(tol.setvalues_calls), 1)
-        self.assertAlmostEqual(tol.setvalues_calls[0][0], 0.0005)
-        self.assertAlmostEqual(tol.setvalues_calls[0][1], -0.0005)
+        # The obsolete fallback uses the same (MinValue, MaxValue) order.
+        self.assertAlmostEqual(tol.setvalues_calls[0][0], -0.0005)
+        self.assertAlmostEqual(tol.setvalues_calls[0][1], 0.0005)
 
     def test_fallback_to_setvalues_when_setvalues2_raises(self):
         tol = _FakeTol(setvalues2_raises=True)
