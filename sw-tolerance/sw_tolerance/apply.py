@@ -26,12 +26,17 @@ def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
     1. tol_obj.Type must be set BEFORE writing values — SetValues2 silently
        no-ops if Type is still swTolNONE.
 
-    2. IDimensionTolerance::SetValues2 takes FOUR args
-       (MaxValue, MinValue, ConfigurationOption, ConfigurationNames) — calling
-       it with two raises a COM error. SolidWorks stores the lower deviation as
-       a negative value, so the minus magnitude is negated here. SetValues2 is
-       also documented to no-op/return False for single-configuration docs in
-       some releases, so we fall back to the obsolete 2-arg SetValues.
+    2. IDimensionTolerance::SetValues2 takes FOUR args, in the order
+       (MinValue, MaxValue, ConfigurationOption, ConfigurationNames) — calling
+       it with two raises a COM error. The argument order matters and is
+       MIN-FIRST: SolidWorks stores the lower deviation as a negative value
+       (MinValue) and the upper deviation as positive (MaxValue), so the minus
+       magnitude is negated here and passed first. Passing them max-first is a
+       silent corruption that is invisible for a symmetric band (|min| == |max|)
+       but applies an asymmetric tolerance backwards. The obsolete 2-arg
+       SetValues uses the same (MinValue, MaxValue) order. SetValues2 is also
+       documented to no-op/return False for single-configuration docs in some
+       releases, so we fall back to SetValues.
     """
     tol_obj.Type = tolerance.tol_type
 
@@ -40,15 +45,16 @@ def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
 
     try:
         ok = tol_obj.SetValues2(
-            max_value, min_value, _SW_SET_VALUE_THIS_CONFIG, "",
+            min_value, max_value, _SW_SET_VALUE_THIS_CONFIG, "",
         )
     except Exception:
         ok = False
 
     if not ok:
-        # Obsolete but reliable for single-configuration documents. If this
-        # also fails it raises, and the caller records the dimension as failed.
-        tol_obj.SetValues(max_value, min_value)
+        # Obsolete but reliable for single-configuration documents. Same
+        # (MinValue, MaxValue) order as SetValues2. If this also fails it
+        # raises, and the caller records the dimension as failed.
+        tol_obj.SetValues(min_value, max_value)
 
 
 def rebuild_and_save(model, out_path: str) -> None:
