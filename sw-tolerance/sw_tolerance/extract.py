@@ -5,7 +5,7 @@ import sys
 from typing import Iterator, Optional, Tuple
 
 from .com import call
-from .models import Feature
+from .models import SW_TOL_NONE, Feature, Tolerance
 
 DimTuple = Tuple[object, object, object, Feature]
 
@@ -71,6 +71,37 @@ def _view_name(view) -> str:
             return view.Name
         except Exception:
             return "<unknown>"
+
+
+def read_existing_tolerance(tol_obj) -> Optional[Tolerance]:
+    """Read the tolerance already present on a dimension, or None if untoleranced.
+
+    This is the inverse of apply.write_tolerance: it harvests the ground-truth
+    label an engineer applied, for use as ML training data. Returns None when
+    the dimension carries no tolerance (Type == swTolNONE), so the caller can
+    drop unlabeled dimensions.
+
+    GetMaxValue/GetMinValue are *no-arg* COM members, so per invariant 3a they
+    must be invoked through com.call (under late binding ``tol_obj.GetMaxValue``
+    already returns the value and calling it again would raise). SolidWorks
+    stores the lower deviation as a negative magnitude — the same convention
+    apply.write_tolerance writes — so both deviations are normalised with abs()
+    to mirror the Tolerance shape produced by decide.tolerance_for.
+    """
+    try:
+        tol_type = int(tol_obj.Type)
+        if tol_type == SW_TOL_NONE:
+            return None
+        max_value = float(call(tol_obj, "GetMaxValue"))
+        min_value = float(call(tol_obj, "GetMinValue"))
+    except Exception as e:
+        print(f"[extract] WARN read_existing_tolerance: {e}", file=sys.stderr)
+        return None
+    return Tolerance(
+        tol_type=tol_type,
+        plus_value=abs(max_value),
+        minus_value=abs(min_value),
+    )
 
 
 def get_active_config_name(model) -> str:
