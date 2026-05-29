@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Single project, lives under `sw-tolerance/`. It's an MVP CLI that opens a SolidWorks `.slddrw`, applies bilateral ±0.5 mm to every untoleranced linear dimension, and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
 
+There is a second, **read-only** CLI: `harvest.py`. It's the inverse of `tolerance.py` — instead of writing a constant policy, it reads tolerances engineers have *already* applied across a folder of drawings and records them as `(feature, label)` training pairs for the eventual ML model that replaces `decide.tolerance_for`. It never mutates, rebuilds, or saves a drawing. This is the data-collection half of the long-term goal (an ML-driven tolerance policy); `tolerance.py` is the apply half.
+
 ## Commands
 
 All commands are run from `sw-tolerance/`.
@@ -13,7 +15,8 @@ All commands are run from `sw-tolerance/`.
 | Task | Command |
 |------|---------|
 | Install runtime deps | `pip3 install -r requirements.txt` |
-| Run CLI | `python3 tolerance.py <input.slddrw> <output.slddrw>` |
+| Run CLI (apply) | `python3 tolerance.py <input.slddrw> <output.slddrw>` |
+| Run CLI (harvest) | `python3 harvest.py <input_dir> <output.jsonl>` |
 | Run all tests | `python3 -m unittest discover tests` |
 | Run a single test | `python3 -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
 
@@ -47,9 +50,13 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 
 5. **Multi-sheet iteration is explicit** in `extract.py`: it loops `GetSheetNames()` and `ActivateSheet(name)` per sheet. `GetFirstView/GetNextView` only walks the active sheet — don't refactor to a single view walk.
 
+6. **The harvester must not leak the label into the feature.** Every dimension `harvest.py` records is by definition toleranced, but at inference the ML model only sees *untoleranced* dims. So `harvest._build_record` normalises `feature.current_tolerance_type` to `SW_TOL_NONE` (what the model will see at predict time); the real tolerance lives only in `label`. Don't record the raw toleranced state as an input feature — that's a train/inference mismatch that would teach the model nothing. Relatedly, `extract.read_existing_tolerance` `abs()`-normalises both deviations so harvested labels mirror the `Tolerance` shape `decide.tolerance_for` produces and the sign convention `apply.write_tolerance` writes (`apply.py` negates the min).
+
 ## The JSONL report
 
 Written to `<output>.report.jsonl` next to the output drawing. First line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension (`feature`, `action` ∈ `{applied, skipped, failed}`, `tolerance`, `error`). The `schema_version` field is the forward-compat hook for using these records as training data later — bump it if you change the record shape.
+
+`harvest.py` writes a **separate** JSONL shape — the training dataset, not the apply report. Header: `schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`; each record is `{source_file, feature, label}` (the `label` is the harvested `Tolerance`). It carries its own `kind` + `schema_version`; bump that `schema_version` independently if the record shape changes.
 
 ## Exit codes (defined in `tolerance.py`)
 

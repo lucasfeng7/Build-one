@@ -40,6 +40,24 @@ SolidWorks does not need to be open beforehand — the CLI launches it via COM. 
 
 A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, and `error`.
 
+## Harvest training data
+
+`harvest.py` is the read-only counterpart to `tolerance.py`. Instead of writing a constant policy onto untoleranced dims, it **reads the tolerances engineers have already applied** across a folder of drawings and records them as `(feature, label)` pairs — the training data for a future ML tolerance model. It never modifies, rebuilds, or saves a drawing.
+
+```
+python sw-tolerance\harvest.py <input_dir> <output.jsonl>
+```
+
+Example:
+
+```
+python sw-tolerance\harvest.py C:\drawings\historical C:\datasets\tolerances.jsonl
+```
+
+It walks every `.slddrw` directly in `<input_dir>`, and for each linear dimension that already carries a tolerance, writes one record `{source_file, feature, label}`. The first line is a header (`schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`). A bad drawing is logged and skipped so the rest of the batch still produces a dataset (exit code 2 signals that some files failed).
+
+The recorded `feature.current_tolerance_type` is normalised to "untoleranced" — i.e. what the model will see at inference time — so harvesting a toleranced dim never leaks the answer into the inputs. The real tolerance lives in `label`.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -86,15 +104,16 @@ After each run, open the output `.slddrw` in SolidWorks, confirm tolerances rend
 
 ```
 sw-tolerance\
-├── tolerance.py             CLI entry: argparse, orchestration, JSONL report
+├── tolerance.py             CLI entry: apply policy, JSONL report
+├── harvest.py               CLI entry: read-only training-data harvester
 ├── requirements.txt
 ├── sw_tolerance\
 │   ├── models.py            Feature, Tolerance, SW_* constants
 │   ├── decide.py            pure policy — the swap point
 │   ├── sw_client.py         COM connect + open/close lifecycle
-│   ├── extract.py           sheets -> views -> display dimensions
+│   ├── extract.py           sheets -> views -> dims; read_existing_tolerance
 │   └── apply.py             tolerance write, rebuild + SaveAs3
-├── tests\test_decide.py
+├── tests\                   decide, com, apply, validate, harvest, read-tol
 └── test_drawings\           drop fixture .slddrw files here
 ```
 
