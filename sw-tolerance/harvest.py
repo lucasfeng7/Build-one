@@ -31,7 +31,17 @@ from typing import Optional
 
 from sw_tolerance import __version__
 from sw_tolerance.extract import iter_dimensions, read_existing_tolerance
-from sw_tolerance.models import LINEAR_DIM_TYPES, SW_TOL_NONE, Feature, Tolerance
+from sw_tolerance.models import (
+    ANGULAR_DIM_TYPES,
+    LENGTH_DIM_TYPES,
+    SW_TOL_NONE,
+    Feature,
+    Tolerance,
+)
+
+# Collect training data for every dimension family decide.tolerance_for can act
+# on, so the dataset matches what the apply path now handles.
+HARVEST_DIM_TYPES = LENGTH_DIM_TYPES | ANGULAR_DIM_TYPES
 from sw_tolerance.sw_client import (
     SolidWorksUnavailable,
     connect,
@@ -124,7 +134,7 @@ def _harvest_drawing(sw, path: str, fh) -> int:
     written = 0
     with open_drawing(sw, path) as model:
         for _disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
-            if feat.dim_type not in LINEAR_DIM_TYPES:
+            if feat.dim_type not in HARVEST_DIM_TYPES:
                 continue
             label = read_existing_tolerance(tol_obj)
             if label is None:

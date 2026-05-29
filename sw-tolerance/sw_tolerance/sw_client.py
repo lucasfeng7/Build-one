@@ -96,11 +96,27 @@ def _sync_constants(constants) -> None:
     models.SW_LINEAR_DIM = int(constants.swLinearDimension)
     models.SW_HOR_LINEAR_DIM = int(constants.swHorLinearDimension)
     models.SW_VERT_LINEAR_DIM = int(constants.swVertLinearDimension)
+    models.SW_ANGULAR_DIM = int(constants.swAngularDimension)
+    models.SW_ARC_LENGTH_DIM = int(constants.swArcLengthDimension)
+    models.SW_RADIAL_DIM = int(constants.swRadialDimension)
+    models.SW_DIAMETER_DIM = int(constants.swDiameterDimension)
+    models.SW_ORDINATE_DIM = int(constants.swOrdinateDimension)
+    models.SW_HOR_ORDINATE_DIM = int(constants.swHorOrdinateDimension)
+    models.SW_VERT_ORDINATE_DIM = int(constants.swVertOrdinateDimension)
     models.LINEAR_DIM_TYPES = frozenset({
         models.SW_LINEAR_DIM,
         models.SW_HOR_LINEAR_DIM,
         models.SW_VERT_LINEAR_DIM,
     })
+    models.LENGTH_DIM_TYPES = models.LINEAR_DIM_TYPES | frozenset({
+        models.SW_DIAMETER_DIM,
+        models.SW_RADIAL_DIM,
+        models.SW_ARC_LENGTH_DIM,
+        models.SW_ORDINATE_DIM,
+        models.SW_HOR_ORDINATE_DIM,
+        models.SW_VERT_ORDINATE_DIM,
+    })
+    models.ANGULAR_DIM_TYPES = frozenset({models.SW_ANGULAR_DIM})
 
 
 @contextmanager
