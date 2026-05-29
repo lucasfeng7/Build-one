@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working norms
+
+These norms apply to every session, not just feature work.
+
+- **Keep this file alive.** CLAUDE.md is the source of truth for how the project works, so treat it as a living document. Whenever a change alters the architecture, an invariant, the command set, the report schema, exit codes, or resolves a "first-run unknown", update the relevant section in the same change — don't let the docs drift behind the code. When an unknown becomes known, move it out of "Known first-run unknowns" into the section it belongs in.
+- **Commit consistently and in small, coherent units.** Make a commit per logical change rather than batching unrelated work. Before starting, `git pull` to stay current; after a unit of work is done and verified, `git push` so nothing lives only on the local machine.
+- **Write detailed commit messages.** Use a concise imperative subject line, then a body that explains *what* changed and *why* — the motivation, the trade-offs considered, and any SolidWorks/COM gotcha that drove the approach. A reader skimming `git log` should understand the reasoning without opening the diff.
+- **Open pull requests with full descriptions.** When work lands on a branch, open a PR whose description covers the problem, the approach, how it was tested (note that end-to-end needs Windows + SolidWorks, so say what was actually exercised vs. only reasoned about), and any follow-ups or risks. Keep PRs focused enough to review in one sitting.
+- **Push and PR only when the user asks** (per the harness rules), but keep the working tree in a state where doing so is a one-step operation: commits clean, message bodies already detailed.
+
 ## Project shape
 
 Single project, lives under `sw-tolerance/`. It's an MVP CLI that opens a SolidWorks `.slddrw`, applies bilateral ±0.5 mm to every untoleranced linear dimension, and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
