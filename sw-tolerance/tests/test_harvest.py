@@ -29,6 +29,8 @@ from harvest import (
     _validate_paths,
 )
 from sw_tolerance.models import (
+    SW_ANGULAR_DIM,
+    SW_DIAMETER_DIM,
     SW_LINEAR_DIM,
     SW_TOL_BILAT,
     SW_TOL_NONE,
@@ -166,13 +168,20 @@ class HarvestOrchestrationTests(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             return [json.loads(line) for line in fh]
 
-    def test_filters_to_linear_toleranced_dims(self):
-        # One drawing with: a linear toleranced dim (kept), a linear
-        # untoleranced dim (label None → dropped), and a non-linear toleranced
-        # dim (wrong type → dropped before the label is even read).
+    def test_filters_to_toleranced_dims_across_families(self):
+        # One drawing mixing every case the filter must handle:
+        #   - linear toleranced       → kept (length family)
+        #   - diameter toleranced     → kept (length family)
+        #   - angular toleranced      → kept (angular family)
+        #   - linear untoleranced     → dropped (label None)
+        #   - chamfer toleranced (10) → dropped (no family)
+        #   - unknown toleranced      → dropped (no family)
         dims = [
             _feat(SW_LINEAR_DIM, "has_tol"),
+            _feat(SW_DIAMETER_DIM, "has_tol"),
+            _feat(SW_ANGULAR_DIM, "has_tol"),
             _feat(SW_LINEAR_DIM, "no_tol"),
+            _feat(10, "has_tol"),
             _feat(999, "has_tol"),
         ]
 
@@ -188,13 +197,16 @@ class HarvestOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_OK)
         lines = self._read_dataset(out)
-        # header + exactly one record
+        # header + exactly three kept records (linear, diameter, angular)
         self.assertEqual(lines[0]["kind"], "training_dataset")
         records = lines[1:]
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["source_file"], "/x/a.slddrw")
-        self.assertEqual(records[0]["feature"]["current_tolerance_type"], SW_TOL_NONE)
-        self.assertAlmostEqual(records[0]["label"]["plus_value"], 0.0005)
+        self.assertEqual(len(records), 3)
+        kept_types = sorted(r["feature"]["dim_type"] for r in records)
+        self.assertEqual(kept_types, sorted([SW_LINEAR_DIM, SW_DIAMETER_DIM, SW_ANGULAR_DIM]))
+        for r in records:
+            self.assertEqual(r["source_file"], "/x/a.slddrw")
+            self.assertEqual(r["feature"]["current_tolerance_type"], SW_TOL_NONE)
+            self.assertAlmostEqual(r["label"]["plus_value"], 0.0005)
 
     def test_failed_file_is_isolated_and_reported(self):
         # First drawing raises on open; second yields one good record. The batch

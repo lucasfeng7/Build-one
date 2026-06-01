@@ -14,7 +14,7 @@ These norms apply to every session, not just feature work.
 
 ## Project shape
 
-Single project, lives under `sw-tolerance/`. It's an MVP CLI that opens a SolidWorks `.slddrw`, applies bilateral ±0.5 mm to every untoleranced linear dimension, and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
+Single project, lives under `sw-tolerance/`. It's an MVP CLI that opens a SolidWorks `.slddrw`, applies a bilateral tolerance to every untoleranced conventional dimension — ±0.5 mm to length-valued dims (linear, diameter, radial, arc-length, ordinate) and ±1° to angular dims — and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
 
 There is a second, **read-only** CLI: `harvest.py`. It's the inverse of `tolerance.py` — instead of writing a constant policy, it reads tolerances engineers have *already* applied across a folder of drawings and records them as `(feature, label)` training pairs for the eventual ML model that replaces `decide.tolerance_for`. It never mutates, rebuilds, or saves a drawing. This is the data-collection half of the long-term goal (an ML-driven tolerance policy); `tolerance.py` is the apply half.
 
@@ -34,7 +34,7 @@ Tests are COM-free and runnable on macOS — they cover `decide.py`, `com.py`, `
 
 ## Architecture — the big picture
 
-Three single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.tolerance_for(feature)` is a pure function** from a `Feature` dict to a `Tolerance | None`. Today it's a constant policy; future ML drops in by replacing this one function.
+Three single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.tolerance_for(feature)` is a pure function** from a `Feature` dict to a `Tolerance | None`. Today it's a constant policy that branches on dimension-type *family* (length vs angular — see "Tolerance policy & dimension-type families" below); future ML drops in by replacing this one function.
 
 ```
 extract.iter_dimensions(model)   →  yields (displayDim, idim, tol_obj, Feature)
@@ -46,11 +46,23 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 
 `extract` yields a 4-tuple because **Apply needs the live COM handles** (`displayDim`, `idim`, `tol_obj`) to mutate the drawing, while **Decide only needs the pure `Feature`**. Keep this split — don't pass COM objects into `decide`.
 
+## Tolerance policy & dimension-type families
+
+`decide.tolerance_for` groups `swDimensionType_e` values into families by the *unit* SolidWorks stores the value/tolerance in, and applies a per-family constant default:
+
+- **Length family** (value/tolerance in **metres**) — `LENGTH_DIM_TYPES` in `models.py`: linear (incl. horizontal/vertical), diameter, radial, arc-length, and ordinate (incl. horizontal/vertical). Gets bilateral **±0.5 mm** (`0.0005 m`).
+- **Angular family** (value/tolerance in **radians**) — `ANGULAR_DIM_TYPES`: angular dims. Gets bilateral **±1°** (`math.radians(1.0)`), written in the dim's native unit, not degrees.
+- **Everything else is skipped** — chamfer, unknown, and any type in neither set fall through to `None` (the `else` branch). A dimension that already carries a tolerance (`current_tolerance_type != swTolNONE`) is skipped too, so the tool never overwrites an engineer's existing tolerance.
+
+`decide` must branch on the family set rather than emit one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
+
+These family sets are seeded from the hardcoded `swDimensionType_e` integers in `models.py` and rebuilt from the live type library by `_sync_constants` on the early-binding path (invariant 2). The non-linear integers were originally inferred from the documented enum ordering, then **confirmed against live SolidWorks** (diameter=6, radial=5, arc-length=4, ordinate=1/7/8, angular=3 all apply at the expected value; the angular band reads exactly ±1.0000°, and chamfer=10 is correctly skipped).
+
 ## Invariants to preserve
 
 1. **`decide.py` and `models.py` must have zero COM imports.** This is what makes decide unit-testable on macOS and trivially swappable for an ML model. If you find yourself wanting `win32com` in either file, the design has drifted.
 
-2. **`sw_client.connect()` overwrites the `SW_*` int constants in `models.py`** with values from the live SolidWorks type library (`_sync_constants`) — but only on the early-binding path. If `gencache.EnsureDispatch` fails (e.g. first run without makepy), `connect()` falls back to late-binding `Dispatch` and the SW 2020 SDK defaults in `models.py` stay in force; a stderr warning is printed so the degraded mode isn't silent. The hardcoded defaults are best-guesses — they matter on hosts without SolidWorks (tests on macOS) and in the late-binding fallback. Don't trust them in production code paths; trust the runtime-synced values when available.
+2. **`sw_client.connect()` overwrites the `SW_*` int constants in `models.py`** with values from the live SolidWorks type library (`_sync_constants`, which also rebuilds the `LINEAR_DIM_TYPES`/`LENGTH_DIM_TYPES`/`ANGULAR_DIM_TYPES` family sets) — but only on the early-binding path. If `gencache.EnsureDispatch` fails (e.g. first run without makepy), `connect()` falls back to late-binding `Dispatch` and the SW 2020 SDK defaults in `models.py` stay in force; a stderr warning is printed so the degraded mode isn't silent. The hardcoded defaults are best-guesses — they matter on hosts without SolidWorks (tests on macOS) and in the late-binding fallback. Don't trust them in production code paths; trust the runtime-synced values when available.
 
 3. **COM imports are lazy inside functions** (`pythoncom`, `win32com.client`) in `sw_client.py` and `apply.py`. This is why the whole package imports cleanly on macOS for testing. Don't promote them to module-level imports.
 
