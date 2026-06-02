@@ -1,1 +1,2 @@
 pywin32>=306
+google-genai>=1.0

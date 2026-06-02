@@ -20,7 +20,7 @@ from typing import Optional
 
 from sw_tolerance import __version__
 from sw_tolerance.apply import SaveFailed, rebuild_and_save, write_tolerance
-from sw_tolerance.decide import tolerance_for
+from sw_tolerance.decide import decide_with_rationale, set_predictor
 from sw_tolerance.extract import get_active_config_name, iter_dimensions
 from sw_tolerance.models import Feature, Tolerance
 from sw_tolerance.sw_client import (
@@ -38,15 +38,26 @@ EXIT_VALIDATION_ERROR = 3
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Apply bilateral ±0.5 mm tolerances to all untoleranced linear dims.",
+        description=(
+            "Apply tolerances to all untoleranced dims. Uses a Gemini-backed "
+            "policy when GEMINI_API_KEY (or GOOGLE_API_KEY) is set; otherwise "
+            "(or with --no-llm) applies the flat ±0.5 mm / ±1° constant policy."
+        ),
     )
     parser.add_argument("input", help="Path to input .slddrw")
     parser.add_argument("output", help="Path to write output .slddrw")
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Force the constant policy even if a Gemini API key is set.",
+    )
     args = parser.parse_args(argv)
 
     rc = _validate_paths(args.input, args.output)
     if rc != EXIT_OK:
         return rc
+
+    policy = _select_policy(use_llm=not args.no_llm)
 
     input_abs = os.path.abspath(args.input)
     output_abs = os.path.abspath(args.output)
@@ -60,10 +71,28 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         with open_drawing(sw, input_abs) as model:
-            return _process(model, output_abs, input_abs, report_path)
+            return _process(model, output_abs, input_abs, report_path, policy)
     except (OpenFailed, SaveFailed) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return EXIT_UNRECOVERABLE
+
+
+def _select_policy(*, use_llm: bool) -> str:
+    """Install the active predictor and return a policy label for the report.
+
+    The Gemini brain is used only when explicitly enabled *and* a key is
+    present; otherwise the constant policy (decide's default) stays in force.
+    Importing predict is deferred to here so the constant path never needs the
+    google-genai SDK installed.
+    """
+    from sw_tolerance import predict
+
+    has_key = any(os.environ.get(var) for var in predict.API_KEY_ENV_VARS)
+    if use_llm and has_key:
+        set_predictor(predict.predict_tolerance)
+        model = os.environ.get("SW_TOLERANCE_MODEL", predict.DEFAULT_MODEL)
+        return f"llm:{model}"
+    return "constant"
 
 
 def _validate_paths(input_path: str, output_path: str) -> int:
@@ -88,44 +117,48 @@ def _validate_paths(input_path: str, output_path: str) -> int:
     return EXIT_OK
 
 
-def _process(model, out_path: str, input_path: str, report_path: Path) -> int:
+def _process(model, out_path: str, input_path: str, report_path: Path, policy: str) -> int:
     applied = skipped = failed = 0
     config_name = get_active_config_name(model)
 
     with report_path.open("w", encoding="utf-8") as fh:
-        _write_header(fh, config_name, input_path)
+        _write_header(fh, config_name, input_path, policy)
 
         for _disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
-            tolerance = tolerance_for(feat)
+            tolerance, rationale = decide_with_rationale(feat)
             if tolerance is None:
                 skipped += 1
-                _write_record(fh, feat, action="skipped", tolerance=None, error=None)
+                _write_record(fh, feat, action="skipped", tolerance=None,
+                              error=None, rationale=rationale)
                 continue
             try:
                 write_tolerance(tol_obj, tolerance)
             except Exception as e:
                 failed += 1
-                _write_record(fh, feat, action="failed", tolerance=tolerance, error=str(e))
+                _write_record(fh, feat, action="failed", tolerance=tolerance,
+                              error=str(e), rationale=rationale)
                 continue
             applied += 1
-            _write_record(fh, feat, action="applied", tolerance=tolerance, error=None)
+            _write_record(fh, feat, action="applied", tolerance=tolerance,
+                          error=None, rationale=rationale)
 
     rebuild_and_save(model, out_path)
 
     print(
-        f"applied={applied} skipped={skipped} failed={failed}",
+        f"policy={policy} applied={applied} skipped={skipped} failed={failed}",
         file=sys.stderr,
     )
     print(f"report: {report_path}", file=sys.stderr)
     return EXIT_PARTIAL_FAILURE if failed > 0 else EXIT_OK
 
 
-def _write_header(fh, config_name: str, input_path: str) -> None:
+def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
     fh.write(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "active_config": config_name,
         "input": input_path,
         "tool_version": __version__,
+        "policy": policy,
     }) + "\n")
 
 
@@ -136,12 +169,14 @@ def _write_record(
     action: str,
     tolerance: Optional[Tolerance],
     error: Optional[str],
+    rationale: Optional[str] = None,
 ) -> None:
     fh.write(json.dumps({
         "feature": asdict(feat),
         "action": action,
         "tolerance": asdict(tolerance) if tolerance else None,
         "error": error,
+        "rationale": rationale,
     }) + "\n")
 
 

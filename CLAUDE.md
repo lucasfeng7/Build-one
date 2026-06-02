@@ -14,9 +14,11 @@ These norms apply to every session, not just feature work.
 
 ## Project shape
 
-Single project, lives under `sw-tolerance/`. It's an MVP CLI that opens a SolidWorks `.slddrw`, applies a bilateral tolerance to every untoleranced conventional dimension — ±0.5 mm to length-valued dims (linear, diameter, radial, arc-length, ordinate) and ±1° to angular dims — and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
+Single project, lives under `sw-tolerance/`. It's a CLI that opens a SolidWorks `.slddrw`, applies a bilateral tolerance to every untoleranced conventional dimension — length-valued dims (linear, diameter, radial, arc-length, ordinate) and angular dims — and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
 
-There is a second, **read-only** CLI: `harvest.py`. It's the inverse of `tolerance.py` — instead of writing a constant policy, it reads tolerances engineers have *already* applied across a folder of drawings and records them as `(feature, label)` training pairs for the eventual ML model that replaces `decide.tolerance_for`. It never mutates, rebuilds, or saves a drawing. This is the data-collection half of the long-term goal (an ML-driven tolerance policy); `tolerance.py` is the apply half.
+The tolerance *magnitude* comes from a pluggable predictor behind `decide.tolerance_for` (see Architecture). There are three predictors on one swap point, in order of where the project is heading: the flat **constant policy** (±0.5 mm / ±1°, the MVP default and universal fallback), an interim **Gemini-backed "brain"** (`predict.predict_tolerance` — chosen per dimension, enabled when `GEMINI_API_KEY` / `GOOGLE_API_KEY` is set), and eventually a **trained ML model** (the last thing built; it drops in at the same seam, bootstrapped by the LLM rationales). The long-term goal is the ML-driven policy; the LLM brain is the interim intelligence that lets the tool feel smart before any training data exists.
+
+There is a second, **read-only** CLI: `harvest.py`. It's the inverse of `tolerance.py` — instead of writing a policy, it reads tolerances engineers have *already* applied across a folder of drawings and records them as `(feature, label)` training pairs for the eventual ML model that replaces `decide.tolerance_for`. It never mutates, rebuilds, or saves a drawing. This is the data-collection half of the long-term goal; `tolerance.py` is the apply half.
 
 ## Commands
 
@@ -26,23 +28,33 @@ All commands are run from `sw-tolerance/`.
 |------|---------|
 | Install runtime deps | `pip3 install -r requirements.txt` |
 | Run CLI (apply) | `python3 tolerance.py <input.slddrw> <output.slddrw>` |
+| Run CLI (apply, force constant) | `python3 tolerance.py <input.slddrw> <output.slddrw> --no-llm` |
 | Run CLI (harvest) | `python3 harvest.py <input_dir> <output.jsonl>` |
 | Run all tests | `python3 -m unittest discover tests` |
 | Run a single test | `python3 -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
 
-Tests are COM-free and runnable on macOS — they cover `decide.py`, `com.py`, `apply.write_tolerance`, and `tolerance._validate_paths` (everything that doesn't need a live COM object). There is no separate linter/formatter wired up.
+`tolerance.py` uses the Gemini-backed predictor automatically when `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) is set (unless `--no-llm` is passed); otherwise it runs the constant policy. `SW_TOLERANCE_MODEL` overrides the model id (default `gemini-2.5-flash`). The LLM path needs `google-genai` installed; the constant path does not (it's lazily imported).
+
+Tests are COM-free and runnable on macOS — they cover `decide.py` (skip rules + constant policy + predictor seam), `predict.py` (with a mocked Gemini client — no network), `com.py`, `apply.write_tolerance`, and `tolerance._validate_paths` (everything that doesn't need a live COM object). There is no separate linter/formatter wired up.
 
 ## Architecture — the big picture
 
-Three single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.tolerance_for(feature)` is a pure function** from a `Feature` dict to a `Tolerance | None`. Today it's a constant policy that branches on dimension-type *family* (length vs angular — see "Tolerance policy & dimension-type families" below); future ML drops in by replacing this one function.
+Single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.tolerance_for(feature)` is a pure function** from a `Feature` to a `Tolerance | None`. It dispatches to a **pluggable predictor** (the swap point for intelligence) and branches on dimension-type *family* (length vs angular — see "Tolerance policy & dimension-type families" below).
 
 ```
 extract.iter_dimensions(model)   →  yields (displayDim, idim, tol_obj, Feature)
        │
 decide.tolerance_for(feature)    →  Tolerance | None    ← swap point
+   └─ decide.decide_with_rationale(feature)             (skip rules, then dispatch)
+          └─ active predictor(feature, family) → (Tolerance | None, rationale | None)
+                 ├─ decide.constant_tolerance        (default / universal fallback)
+                 ├─ predict.predict_tolerance        (Gemini brain; CLI installs it)
+                 └─ <trained model>                  (eventual final predictor)
        │
 apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 ```
+
+**The skip rules (already-toleranced / hole callout / unsupported family) live in `decide.decide_with_rationale`, not in the predictors** — single source of truth, so no predictor (including the LLM) can ever re-tolerance a toleranced dim, touch a hole callout, or an unsupported family. A predictor only chooses the *magnitude* for a feature that already passed the skip rules (and may still return `None` to leave it untoleranced). Swap predictors with `decide.set_predictor(fn)` / `decide.use_constant()`; the default is the constant policy, which is why the module stays pure and offline-testable. The optional `rationale` is the predictor's free-text justification (the LLM fills it; the constant policy returns `None`) — recorded in the report and useful as future training signal.
 
 `extract` yields a 4-tuple because **Apply needs the live COM handles** (`displayDim`, `idim`, `tol_obj`) to mutate the drawing, while **Decide only needs the pure `Feature`**. Keep this split — don't pass COM objects into `decide`.
 
@@ -60,7 +72,7 @@ These family sets are seeded from the hardcoded `swDimensionType_e` integers in 
 
 ## Invariants to preserve
 
-1. **`decide.py` and `models.py` must have zero COM imports.** This is what makes decide unit-testable on macOS and trivially swappable for an ML model. If you find yourself wanting `win32com` in either file, the design has drifted.
+1. **`decide.py` and `models.py` must have zero COM imports.** This is what makes decide unit-testable on macOS and trivially swappable for an ML model. If you find yourself wanting `win32com` in either file, the design has drifted. `predict.py` (the Gemini brain) is likewise **zero-COM**, and imports `google-genai` **lazily inside functions** (same rule as 3 below) so the package still imports on macOS without the SDK; only the LLM code path needs it installed. `decide.py` must not import `predict` at module top either — callers (the CLI) wire it in via `set_predictor`, keeping `decide` import-clean and dependency-free.
 
 2. **`sw_client.connect()` overwrites the `SW_*` int constants in `models.py`** with values from the live SolidWorks type library (`_sync_constants`, which also rebuilds the `LINEAR_DIM_TYPES`/`LENGTH_DIM_TYPES`/`ANGULAR_DIM_TYPES` family sets) — but only on the early-binding path. If `gencache.EnsureDispatch` fails (e.g. first run without makepy), `connect()` falls back to late-binding `Dispatch` and the SW 2020 SDK defaults in `models.py` stay in force; a stderr warning is printed so the degraded mode isn't silent. The hardcoded defaults are best-guesses — they matter on hosts without SolidWorks (tests on macOS) and in the late-binding fallback. Don't trust them in production code paths; trust the runtime-synced values when available.
 
@@ -76,7 +88,7 @@ These family sets are seeded from the hardcoded `swDimensionType_e` integers in 
 
 ## The JSONL report
 
-Written to `<output>.report.jsonl` next to the output drawing. First line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension (`feature`, `action` ∈ `{applied, skipped, failed}`, `tolerance`, `error`). The `schema_version` field is the forward-compat hook for using these records as training data later — bump it if you change the record shape.
+Written to `<output>.report.jsonl` next to the output drawing. First line is a header (`schema_version`, `active_config`, `input`, `tool_version`, `policy`); each subsequent line is one record per dimension (`feature`, `action` ∈ `{applied, skipped, failed}`, `tolerance`, `error`, `rationale`). `policy` is `"constant"` or `"llm:<model-id>"` so a report self-documents which predictor produced it; `rationale` is the predictor's justification string (LLM only, else `null`). The `schema_version` field is the forward-compat hook for using these records as training data later — bump it if you change the record shape. **Current: `schema_version: 2`** (added `policy` to the header and `rationale` to each record in the LLM-predictor change).
 
 `harvest.py` writes a **separate** JSONL shape — the training dataset, not the apply report. Header: `schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`; each record is `{source_file, feature, label}` (the `label` is the harvested `Tolerance`). It carries its own `kind` + `schema_version`; bump that `schema_version` independently if the record shape changes.
 
