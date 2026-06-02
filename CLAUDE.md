@@ -60,13 +60,13 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 
 ## Tolerance policy & dimension-type families
 
-`decide.tolerance_for` groups `swDimensionType_e` values into families by the *unit* SolidWorks stores the value/tolerance in, and applies a per-family constant default:
+`decide._family_of` groups `swDimensionType_e` values into families by the *unit* SolidWorks stores the value/tolerance in, and the **constant policy** (`constant_tolerance`, the default predictor) applies a per-family default:
 
-- **Length family** (value/tolerance in **metres**) — `LENGTH_DIM_TYPES` in `models.py`: linear (incl. horizontal/vertical), diameter, radial, arc-length, and ordinate (incl. horizontal/vertical). Gets bilateral **±0.5 mm** (`0.0005 m`).
-- **Angular family** (value/tolerance in **radians**) — `ANGULAR_DIM_TYPES`: angular dims. Gets bilateral **±1°** (`math.radians(1.0)`), written in the dim's native unit, not degrees.
-- **Everything else is skipped** — chamfer, unknown, and any type in neither set fall through to `None` (the `else` branch). A dimension that already carries a tolerance (`current_tolerance_type != swTolNONE`) is skipped too, so the tool never overwrites an engineer's existing tolerance.
+- **Length family** (value/tolerance in **metres**) — `LENGTH_DIM_TYPES` in `models.py`: linear (incl. horizontal/vertical), diameter, radial, arc-length, and ordinate (incl. horizontal/vertical). Constant default: bilateral **±0.5 mm** (`0.0005 m`).
+- **Angular family** (value/tolerance in **radians**) — `ANGULAR_DIM_TYPES`: angular dims. Constant default: bilateral **±1°** (`math.radians(1.0)`), written in the dim's native unit, not degrees.
+- **Everything else is skipped** — chamfer, unknown, and any type in neither family (`_family_of` returns `None`). This skip — along with the already-toleranced (`current_tolerance_type != swTolNONE`) and hole-callout skips — happens in `decide_with_rationale` *before* any predictor runs (see Architecture), so no predictor ever sees them and the tool never overwrites an engineer's existing tolerance.
 
-`decide` must branch on the family set rather than emit one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
+Any predictor must emit in the family's unit, not one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. The constant policy picks the right per-unit default; the Gemini predictor is told mm vs degrees and converts its answer back to metres/radians. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
 
 These family sets are seeded from the hardcoded `swDimensionType_e` integers in `models.py` and rebuilt from the live type library by `_sync_constants` on the early-binding path (invariant 2). The non-linear integers were originally inferred from the documented enum ordering, then **confirmed against live SolidWorks** (diameter=6, radial=5, arc-length=4, ordinate=1/7/8, angular=3 all apply at the expected value; the angular band reads exactly ±1.0000°, and chamfer=10 is correctly skipped).
 
