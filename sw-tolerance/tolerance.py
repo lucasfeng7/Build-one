@@ -39,9 +39,9 @@ EXIT_VALIDATION_ERROR = 3
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Apply tolerances to all untoleranced dims. Uses a Gemini-backed "
-            "policy when GEMINI_API_KEY (or GOOGLE_API_KEY) is set; otherwise "
-            "(or with --no-llm) applies the flat ±0.5 mm / ±1° constant policy."
+            "Apply tolerances to all untoleranced dims. Uses a DeepSeek-backed "
+            "policy when DEEPSEEK_API_KEY is set; otherwise (or with --no-llm) "
+            "applies the flat ±0.5 mm / ±1° constant policy."
         ),
     )
     parser.add_argument("input", help="Path to input .slddrw")
@@ -49,7 +49,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--no-llm",
         action="store_true",
-        help="Force the constant policy even if a Gemini API key is set.",
+        help="Force the constant policy even if a DeepSeek API key is set.",
     )
     args = parser.parse_args(argv)
 
@@ -80,10 +80,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 def _select_policy(*, use_llm: bool) -> str:
     """Install the active predictor and return a policy label for the report.
 
-    The Gemini brain is used only when explicitly enabled *and* a key is
+    The DeepSeek brain is used only when explicitly enabled *and* a key is
     present; otherwise the constant policy (decide's default) stays in force.
     Importing predict is deferred to here so the constant path never needs the
-    google-genai SDK installed.
+    openai SDK installed.
     """
     from sw_tolerance import predict
 

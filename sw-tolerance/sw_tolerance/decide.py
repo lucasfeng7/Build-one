@@ -5,12 +5,12 @@ judgment flows. It runs the deterministic skip rules, then delegates the
 *magnitude* decision to a pluggable predictor:
 
     constant_tolerance      — the flat MVP policy and the universal fallback
-    predict.predict_tolerance — the interim Gemini-backed "brain" (CLI swaps it in)
+    predict.predict_tolerance — the interim DeepSeek-backed "brain" (CLI swaps it in)
     <trained model>         — the eventual final predictor, dropped in here later
 
 The default predictor is the constant policy, so this module stays pure and
 unit-testable on macOS with no network and no SolidWorks. The CLI swaps in the
-Gemini predictor at runtime via `set_predictor`. Keep this file free of COM
+DeepSeek predictor at runtime via `set_predictor`. Keep this file free of COM
 imports (invariant #1); `predict` is imported lazily by callers, never here.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ _ANGULAR_HALF_WIDTH_RAD: Final[float] = math.radians(1.0)  # 1°
 # A predictor maps a (tolerable) feature and its resolved family to a tolerance
 # decision plus an optional human-readable rationale. Returning None for the
 # tolerance means "leave this dimension untoleranced". Every predictor — the
-# constant policy, the Gemini brain, the eventual trained model — shares this
+# constant policy, the DeepSeek brain, the eventual trained model — shares this
 # signature so they swap at the one seam.
 Predictor = Callable[[Feature, str], Tuple[Optional[Tolerance], Optional[str]]]
 
@@ -74,7 +74,7 @@ _active_predictor: Predictor = constant_tolerance
 
 
 def set_predictor(predictor: Predictor) -> None:
-    """Swap the active predictor (e.g. the CLI installs the Gemini brain)."""
+    """Swap the active predictor (e.g. the CLI installs the DeepSeek brain)."""
     global _active_predictor
     _active_predictor = predictor
 

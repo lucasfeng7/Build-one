@@ -16,7 +16,7 @@ These norms apply to every session, not just feature work.
 
 Single project, lives under `sw-tolerance/`. It's a CLI that opens a SolidWorks `.slddrw`, applies a bilateral tolerance to every untoleranced conventional dimension — length-valued dims (linear, diameter, radial, arc-length, ordinate) and angular dims — and writes a new `.slddrw` plus a JSONL report. End-to-end runs only on Windows with SolidWorks installed (uses COM via pywin32); the code is developed on macOS.
 
-The tolerance *magnitude* comes from a pluggable predictor behind `decide.tolerance_for` (see Architecture). There are three predictors on one swap point, in order of where the project is heading: the flat **constant policy** (±0.5 mm / ±1°, the MVP default and universal fallback), an interim **Gemini-backed "brain"** (`predict.predict_tolerance` — chosen per dimension, enabled when `GEMINI_API_KEY` / `GOOGLE_API_KEY` is set), and eventually a **trained ML model** (the last thing built; it drops in at the same seam, bootstrapped by the LLM rationales). The long-term goal is the ML-driven policy; the LLM brain is the interim intelligence that lets the tool feel smart before any training data exists.
+The tolerance *magnitude* comes from a pluggable predictor behind `decide.tolerance_for` (see Architecture). There are three predictors on one swap point, in order of where the project is heading: the flat **constant policy** (±0.5 mm / ±1°, the MVP default and universal fallback), an interim **DeepSeek-backed "brain"** (`predict.predict_tolerance` — chosen per dimension, enabled when `DEEPSEEK_API_KEY` is set; DeepSeek exposes an OpenAI-compatible API, reached via the `openai` SDK), and eventually a **trained ML model** (the last thing built; it drops in at the same seam, bootstrapped by the LLM rationales). The long-term goal is the ML-driven policy; the LLM brain is the interim intelligence that lets the tool feel smart before any training data exists.
 
 There is a second, **read-only** CLI: `harvest.py`. It's the inverse of `tolerance.py` — instead of writing a policy, it reads tolerances engineers have *already* applied across a folder of drawings and records them as `(feature, label)` training pairs for the eventual ML model that replaces `decide.tolerance_for`. It never mutates, rebuilds, or saves a drawing. This is the data-collection half of the long-term goal; `tolerance.py` is the apply half.
 
@@ -33,9 +33,9 @@ All commands are run from `sw-tolerance/`.
 | Run all tests | `python3 -m unittest discover tests` |
 | Run a single test | `python3 -m unittest tests.test_decide.DecideTests.test_already_toleranced_is_skipped` |
 
-`tolerance.py` uses the Gemini-backed predictor automatically when `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) is set (unless `--no-llm` is passed); otherwise it runs the constant policy. `SW_TOLERANCE_MODEL` overrides the model id (default `gemini-2.5-flash`). The LLM path needs `google-genai` installed; the constant path does not (it's lazily imported).
+`tolerance.py` uses the DeepSeek-backed predictor automatically when `DEEPSEEK_API_KEY` is set (unless `--no-llm` is passed); otherwise it runs the constant policy. `SW_TOLERANCE_MODEL` overrides the model id (default `deepseek-chat`). The LLM path needs `openai` installed; the constant path does not (it's lazily imported).
 
-Tests are COM-free and runnable on macOS — they cover `decide.py` (skip rules + constant policy + predictor seam), `predict.py` (with a mocked Gemini client — no network), `com.py`, `apply.write_tolerance`, and `tolerance._validate_paths` (everything that doesn't need a live COM object). There is no separate linter/formatter wired up.
+Tests are COM-free and runnable on macOS — they cover `decide.py` (skip rules + constant policy + predictor seam), `predict.py` (with a mocked DeepSeek client — no network), `com.py`, `apply.write_tolerance`, and `tolerance._validate_paths` (everything that doesn't need a live COM object). There is no separate linter/formatter wired up.
 
 ## Architecture — the big picture
 
@@ -48,7 +48,7 @@ decide.tolerance_for(feature)    →  Tolerance | None    ← swap point
    └─ decide.decide_with_rationale(feature)             (skip rules, then dispatch)
           └─ active predictor(feature, family) → (Tolerance | None, rationale | None)
                  ├─ decide.constant_tolerance        (default / universal fallback)
-                 ├─ predict.predict_tolerance        (Gemini brain; CLI installs it)
+                 ├─ predict.predict_tolerance        (DeepSeek brain; CLI installs it)
                  └─ <trained model>                  (eventual final predictor)
        │
 apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
@@ -66,13 +66,13 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 - **Angular family** (value/tolerance in **radians**) — `ANGULAR_DIM_TYPES`: angular dims. Constant default: bilateral **±1°** (`math.radians(1.0)`), written in the dim's native unit, not degrees.
 - **Everything else is skipped** — chamfer, unknown, and any type in neither family (`_family_of` returns `None`). This skip — along with the already-toleranced (`current_tolerance_type != swTolNONE`) and hole-callout skips — happens in `decide_with_rationale` *before* any predictor runs (see Architecture), so no predictor ever sees them and the tool never overwrites an engineer's existing tolerance.
 
-Any predictor must emit in the family's unit, not one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. The constant policy picks the right per-unit default; the Gemini predictor is told mm vs degrees and converts its answer back to metres/radians. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
+Any predictor must emit in the family's unit, not one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. The constant policy picks the right per-unit default; the DeepSeek predictor is told mm vs degrees and converts its answer back to metres/radians. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
 
 These family sets are seeded from the hardcoded `swDimensionType_e` integers in `models.py` and rebuilt from the live type library by `_sync_constants` on the early-binding path (invariant 2). The non-linear integers were originally inferred from the documented enum ordering, then **confirmed against live SolidWorks** (diameter=6, radial=5, arc-length=4, ordinate=1/7/8, angular=3 all apply at the expected value; the angular band reads exactly ±1.0000°, and chamfer=10 is correctly skipped).
 
 ## Invariants to preserve
 
-1. **`decide.py` and `models.py` must have zero COM imports.** This is what makes decide unit-testable on macOS and trivially swappable for an ML model. If you find yourself wanting `win32com` in either file, the design has drifted. `predict.py` (the Gemini brain) is likewise **zero-COM**, and imports `google-genai` **lazily inside functions** (same rule as 3 below) so the package still imports on macOS without the SDK; only the LLM code path needs it installed. `decide.py` must not import `predict` at module top either — callers (the CLI) wire it in via `set_predictor`, keeping `decide` import-clean and dependency-free.
+1. **`decide.py` and `models.py` must have zero COM imports.** This is what makes decide unit-testable on macOS and trivially swappable for an ML model. If you find yourself wanting `win32com` in either file, the design has drifted. `predict.py` (the DeepSeek brain) is likewise **zero-COM**, and imports `openai` **lazily inside functions** (same rule as 3 below) so the package still imports on macOS without the SDK; only the LLM code path needs it installed. `decide.py` must not import `predict` at module top either — callers (the CLI) wire it in via `set_predictor`, keeping `decide` import-clean and dependency-free.
 
 2. **`sw_client.connect()` overwrites the `SW_*` int constants in `models.py`** with values from the live SolidWorks type library (`_sync_constants`, which also rebuilds the `LINEAR_DIM_TYPES`/`LENGTH_DIM_TYPES`/`ANGULAR_DIM_TYPES` family sets) — but only on the early-binding path. If `gencache.EnsureDispatch` fails (e.g. first run without makepy), `connect()` falls back to late-binding `Dispatch` and the SW 2020 SDK defaults in `models.py` stay in force; a stderr warning is printed so the degraded mode isn't silent. The hardcoded defaults are best-guesses — they matter on hosts without SolidWorks (tests on macOS) and in the late-binding fallback. Don't trust them in production code paths; trust the runtime-synced values when available.
 

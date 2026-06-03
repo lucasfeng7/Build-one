@@ -1,7 +1,7 @@
 """Unit tests for predict.predict_tolerance — COM-free, network-free, macOS-runnable.
 
-The Gemini client is replaced with a fake (no SDK, no network). Run from the
-project root with:
+The DeepSeek client (OpenAI-compatible) is replaced with a fake (no SDK, no
+network). Run from the project root with:
     python3 -m unittest discover tests
 """
 from __future__ import annotations
@@ -16,42 +16,57 @@ from sw_tolerance import predict
 from sw_tolerance.models import SW_ANGULAR_DIM, SW_LINEAR_DIM, SW_TOL_BILAT, Feature
 
 
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.message = _FakeMessage(content)
+
+
 class _FakeResp:
-    def __init__(self, text):
-        self.text = text
+    def __init__(self, content):
+        self.choices = [_FakeChoice(content)]
 
 
-class _FakeModels:
-    """Records generate_content() kwargs and returns a programmed JSON response.
+class _FakeCompletions:
+    """Records create() kwargs and returns a programmed JSON response.
 
     `payload` is either a dict (serialised to JSON), a raw string (returned as
-    `resp.text` verbatim — used to exercise the unparseable-reply fallback), or
-    a callable invoked per call (lets a test raise).
+    the message content verbatim — used to exercise the unparseable-reply
+    fallback), or a callable invoked per call (lets a test raise).
     """
 
     def __init__(self, payload):
         self._payload = payload
         self.calls = []
 
-    def generate_content(self, **kwargs):
+    def create(self, **kwargs):
         self.calls.append(kwargs)
         payload = self._payload() if callable(self._payload) else self._payload
-        text = payload if isinstance(payload, str) else json.dumps(payload)
-        return _FakeResp(text)
+        content = payload if isinstance(payload, str) else json.dumps(payload)
+        return _FakeResp(content)
+
+
+class _FakeChat:
+    def __init__(self, completions):
+        self.completions = completions
 
 
 class _FakeClient:
-    def __init__(self, models):
-        self.models = models
+    def __init__(self, completions):
+        self.chat = _FakeChat(completions)
 
 
 def _install(payload=None, *, raises=None):
-    """Install a fake client and return its models object for assertions."""
+    """Install a fake client and return its completions object for assertions."""
     if raises is not None:
         payload = lambda: (_ for _ in ()).throw(raises)  # noqa: E731
-    models = _FakeModels(payload)
-    predict._client_box[:] = [_FakeClient(models)]
-    return models
+    completions = _FakeCompletions(payload)
+    predict._client_box[:] = [_FakeClient(completions)]
+    return completions
 
 
 def _feature(**overrides) -> Feature:
@@ -103,16 +118,16 @@ class PredictToleranceTests(unittest.TestCase):
         self.assertEqual(rationale, "reference dim")
 
     def test_prompt_carries_human_units_and_type(self):
-        models = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
         predict.predict_tolerance(_feature(value=0.025, dim_type=SW_LINEAR_DIM), "length")
-        kwargs = models.calls[0]
-        user_text = kwargs["contents"]
-        self.assertIn("25 mm", user_text)            # 0.025 m → 25 mm, in human units
-        self.assertIn(str(SW_LINEAR_DIM), user_text)  # the dim type code
-        self.assertIn("length", user_text)
-        # The system instruction is sent, and JSON output is requested.
-        self.assertEqual(kwargs["config"]["system_instruction"], predict._SYSTEM_PROMPT)
-        self.assertEqual(kwargs["config"]["response_mime_type"], "application/json")
+        kwargs = completions.calls[0]
+        roles = {m["role"]: m["content"] for m in kwargs["messages"]}
+        self.assertIn("25 mm", roles["user"])            # 0.025 m → 25 mm, in human units
+        self.assertIn(str(SW_LINEAR_DIM), roles["user"])  # the dim type code
+        self.assertIn("length", roles["user"])
+        # The system prompt is sent, and JSON output is requested.
+        self.assertEqual(roles["system"], predict._SYSTEM_PROMPT)
+        self.assertEqual(kwargs["response_format"], {"type": "json_object"})
 
     def test_client_error_falls_back_to_constant(self):
         _install(raises=RuntimeError("network down"))
@@ -134,17 +149,17 @@ class PredictToleranceTests(unittest.TestCase):
         self.assertIn("WARNING", buf.getvalue())
 
     def test_identical_features_hit_the_cache(self):
-        models = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
         f = _feature(value=0.01)
         predict.predict_tolerance(f, "length")
         predict.predict_tolerance(_feature(value=0.01), "length")  # identical key
-        self.assertEqual(len(models.calls), 1, "second identical dim must be cached")
+        self.assertEqual(len(completions.calls), 1, "second identical dim must be cached")
 
     def test_distinct_values_are_not_collapsed(self):
-        models = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
         predict.predict_tolerance(_feature(value=0.01), "length")
         predict.predict_tolerance(_feature(value=0.02), "length")
-        self.assertEqual(len(models.calls), 2)
+        self.assertEqual(len(completions.calls), 2)
 
 
 if __name__ == "__main__":
