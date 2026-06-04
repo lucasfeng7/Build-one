@@ -44,6 +44,14 @@ SW_VERT_ORDINATE_DIM: int = 8
 # fallback path in sw_client.connect(); early-binding reads it from constants.
 SW_DISABLE_MESSAGES: int = 263
 
+# swDimensionTextParts_e — selectors for IDisplayDimension::GetText(part). These
+# pick the non-value annotation text around a dimension (a leading ⌀ / "M6" etc.
+# in the prefix, a trailing "TYP" / "MAX" etc. in the suffix). The enum is small
+# and stable across SolidWorks releases; synced from the live type library on
+# the early-binding path (see sw_client._sync_constants).
+SW_DIM_TEXT_PREFIX: int = 1
+SW_DIM_TEXT_SUFFIX: int = 2
+
 LINEAR_DIM_TYPES: Final = frozenset({SW_LINEAR_DIM, SW_HOR_LINEAR_DIM, SW_VERT_LINEAR_DIM})
 
 # Dimension-type families grouped by the *unit* SolidWorks stores their value
@@ -72,6 +80,19 @@ class Feature:
     view_name: str
     sheet_name: str
     is_hole_callout: bool = False
+    # Richer context the predictor reasons over (and the future ML model trains
+    # on). All have safe defaults so the extractor can degrade gracefully when a
+    # COM read is unavailable, and so existing call sites/tests stay valid.
+    #
+    # is_reference: the dim is a reference/driven dim (shown in parentheses).
+    #   These are never toleranced, so decide skips them — both a correctness
+    #   fix and a real signal.
+    # text_prefix / text_suffix: the non-value annotation text around the dim
+    #   (e.g. a leading "⌀" / "M6", a trailing "TYP" / "MAX"), which carries
+    #   intent the bare dim_type misses.
+    is_reference: bool = False
+    text_prefix: str = ""
+    text_suffix: str = ""
 
 
 @dataclass(frozen=True)

@@ -103,6 +103,8 @@ def _sync_constants(constants) -> None:
     models.SW_ORDINATE_DIM = int(constants.swOrdinateDimension)
     models.SW_HOR_ORDINATE_DIM = int(constants.swHorOrdinateDimension)
     models.SW_VERT_ORDINATE_DIM = int(constants.swVertOrdinateDimension)
+    models.SW_DIM_TEXT_PREFIX = int(constants.swDimensionTextPrefix)
+    models.SW_DIM_TEXT_SUFFIX = int(constants.swDimensionTextSuffix)
     models.LINEAR_DIM_TYPES = frozenset({
         models.SW_LINEAR_DIM,
         models.SW_HOR_LINEAR_DIM,

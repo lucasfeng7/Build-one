@@ -53,7 +53,9 @@ EXIT_UNRECOVERABLE = 1
 EXIT_PARTIAL_FAILURE = 2
 EXIT_VALIDATION_ERROR = 3
 
-SCHEMA_VERSION = 1
+# v2: Feature gained richer fields (is_reference, text_prefix, text_suffix),
+# so each record's `feature` shape changed.
+SCHEMA_VERSION = 2
 
 
 def main(argv: Optional[list[str]] = None) -> int:

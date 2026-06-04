@@ -5,7 +5,13 @@ import sys
 from typing import Iterator, Optional, Tuple
 
 from .com import call
-from .models import SW_TOL_NONE, Feature, Tolerance
+from .models import (
+    SW_DIM_TEXT_PREFIX,
+    SW_DIM_TEXT_SUFFIX,
+    SW_TOL_NONE,
+    Feature,
+    Tolerance,
+)
 
 DimTuple = Tuple[object, object, object, Feature]
 
@@ -53,14 +59,62 @@ def _build_feature(
     except Exception as e:
         print(f"[extract] WARN {sheet_name}/{view_name}: {e}", file=sys.stderr)
         return None
+    # Richer attributes are best-effort: each read is individually guarded
+    # (see _display_attrs) so a missing/over-version COM member degrades to the
+    # field default rather than dropping a dimension that extracted fine above.
+    is_reference, text_prefix, text_suffix = _display_attrs(disp_dim)
     feat = Feature(
         value=value,
         dim_type=dim_type,
         current_tolerance_type=current_tol_type,
         view_name=view_name,
         sheet_name=sheet_name,
+        is_reference=is_reference,
+        text_prefix=text_prefix,
+        text_suffix=text_suffix,
     )
     return feat, idim, tol
+
+
+def _display_attrs(disp_dim) -> Tuple[bool, str, str]:
+    """Best-effort richer display attributes: (is_reference, prefix, suffix).
+
+    Every read is guarded independently so one unavailable member never costs
+    the others (or the whole dimension). The exact COM members are first-run
+    unknowns (see CLAUDE.md) — confirm/adjust on a live Windows run.
+    """
+    return (
+        _safe_is_reference(disp_dim),
+        _safe_text(disp_dim, SW_DIM_TEXT_PREFIX),
+        _safe_text(disp_dim, SW_DIM_TEXT_SUFFIX),
+    )
+
+
+def _safe_is_reference(disp_dim) -> bool:
+    """True if the dim is a reference/driven dim (shown in parentheses).
+
+    ``IsReference`` is a property get (works under both bindings, so no
+    ``com.call``). If a SolidWorks build doesn't expose it, default to False —
+    the conservative choice (we'd tolerate the dim rather than wrongly skip it).
+    """
+    try:
+        return bool(disp_dim.IsReference)
+    except Exception:
+        return False
+
+
+def _safe_text(disp_dim, part: int) -> str:
+    """Read one annotation-text part via GetText(part), or "" if unavailable.
+
+    ``GetText`` takes an argument, so it's a real callable under late binding
+    (invariant 3a) and is called directly. Returns "" for the common case of no
+    prefix/suffix text.
+    """
+    try:
+        text = disp_dim.GetText(part)
+        return str(text) if text else ""
+    except Exception:
+        return ""
 
 
 def _view_name(view) -> str:
