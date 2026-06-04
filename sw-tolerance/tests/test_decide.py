@@ -145,13 +145,19 @@ class PredictorSeamTests(unittest.TestCase):
         decide_with_rationale(_feature(dim_type=SW_LINEAR_DIM))
         self.assertEqual(seen, ["angular", "length"])
 
+    def test_reference_dim_is_skipped(self):
+        # Reference/driven dims (parentheses) must never get a tolerance.
+        self.assertIsNone(tolerance_for(_feature(is_reference=True)))
+
     def test_predictor_not_called_for_skipped_features(self):
         # The skip rules must run BEFORE the predictor, so the LLM (or any
-        # predictor) never sees an already-toleranced dim, a hole callout, or an
-        # unsupported family — preserving the harvest/apply invariants.
+        # predictor) never sees an already-toleranced dim, a reference dim, a
+        # hole callout, or an unsupported family — preserving the harvest/apply
+        # invariants.
         calls = []
         set_predictor(lambda f, family: calls.append(family) or (None, None))
         self.assertIsNone(tolerance_for(_feature(current_tolerance_type=SW_TOL_BILAT)))
+        self.assertIsNone(tolerance_for(_feature(is_reference=True)))
         self.assertIsNone(tolerance_for(_feature(is_hole_callout=True)))
         self.assertIsNone(tolerance_for(_feature(dim_type=10)))  # unknown family
         self.assertEqual(calls, [], "predictor must not run for skipped features")

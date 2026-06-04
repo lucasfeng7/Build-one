@@ -154,7 +154,9 @@ def _process(model, out_path: str, input_path: str, report_path: Path, policy: s
 
 def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
     fh.write(json.dumps({
-        "schema_version": 2,
+        # v3: Feature gained is_reference / text_prefix / text_suffix, so each
+        # record's embedded `feature` shape changed.
+        "schema_version": 3,
         "active_config": config_name,
         "input": input_path,
         "tool_version": __version__,

@@ -99,11 +99,18 @@ def _query(f: Feature, family: str) -> Tuple[Optional[Tolerance], Optional[str]]
     # SolidWorks stores lengths in metres and angles in radians; the model reasons
     # in human units, so convert out for the prompt and back for the Tolerance.
     human_value = f.value * 1000.0 if is_length else math.degrees(f.value)
-    user_msg = (
-        f"Dimension type code: {f.dim_type} ({family} family).\n"
-        f"Nominal value: {human_value:.4g} {unit}.\n"
-        f"Decide the bilateral tolerance (in {unit})."
-    )
+    lines = [
+        f"Dimension type code: {f.dim_type} ({family} family).",
+        f"Nominal value: {human_value:.4g} {unit}.",
+    ]
+    # Surface the dim's annotation text when present — a leading "⌀"/"M6" or a
+    # trailing "TYP"/"MAX" carries intent the bare type/value miss. (Reference
+    # dims are skipped upstream, so they never reach here.)
+    annotation = " ".join(p for p in (f.text_prefix, f.text_suffix) if p).strip()
+    if annotation:
+        lines.append(f"Annotation text: {annotation}")
+    lines.append(f"Decide the bilateral tolerance (in {unit}).")
+    user_msg = "\n".join(lines)
     model = os.environ.get("SW_TOLERANCE_MODEL", DEFAULT_MODEL)
     resp = _client().chat.completions.create(
         model=model,

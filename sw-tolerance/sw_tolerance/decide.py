@@ -89,10 +89,15 @@ def decide_with_rationale(f: Feature) -> Tuple[Optional[Tolerance], Optional[str
 
     The skip rules live here — not in the predictors — so they are the single
     source of truth and the LLM path can *never* re-tolerance an already-
-    toleranced dim, touch a hole callout, or an unsupported dim family. This
-    preserves the harvest/apply invariants regardless of which predictor runs.
+    toleranced dim, a reference dim, a hole callout, or an unsupported dim
+    family. This preserves the harvest/apply invariants regardless of which
+    predictor runs.
     """
     if f.current_tolerance_type != SW_TOL_NONE:
+        return None, None
+    if f.is_reference:
+        # Reference/driven dims (shown in parentheses) are not toleranced —
+        # they only report a value derived elsewhere. Never add a ± to them.
         return None, None
     if f.is_hole_callout:
         return None, None

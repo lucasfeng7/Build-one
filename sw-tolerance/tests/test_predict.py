@@ -128,6 +128,18 @@ class PredictToleranceTests(unittest.TestCase):
         # The system prompt is sent, and JSON output is requested.
         self.assertEqual(roles["system"], predict._SYSTEM_PROMPT)
         self.assertEqual(kwargs["response_format"], {"type": "json_object"})
+        # No annotation text on this feature → no annotation line in the prompt.
+        self.assertNotIn("Annotation text", roles["user"])
+
+    def test_annotation_text_surfaced_when_present(self):
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        predict.predict_tolerance(
+            _feature(text_prefix="⌀", text_suffix="MAX"), "length"
+        )
+        user_text = completions.calls[0]["messages"][1]["content"]
+        self.assertIn("Annotation text:", user_text)
+        self.assertIn("⌀", user_text)
+        self.assertIn("MAX", user_text)
 
     def test_client_error_falls_back_to_constant(self):
         _install(raises=RuntimeError("network down"))
