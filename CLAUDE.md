@@ -39,23 +39,25 @@ Tests are COM-free and runnable on macOS — they cover `decide.py` (skip rules 
 
 ## Architecture — the big picture
 
-Single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.tolerance_for(feature)` is a pure function** from a `Feature` to a `Tolerance | None`. It dispatches to a **pluggable predictor** (the swap point for intelligence) and branches on dimension-type *family* (length vs angular — see "Tolerance policy & dimension-type families" below).
+Single-purpose modules under `sw_tolerance/`. The whole point of the layout is that **`decide.decide_for(feature)` is a pure function** from a `Feature` to a `ToleranceDecision`. It dispatches to a **pluggable predictor** (the swap point for intelligence) and branches on dimension-type *family* (length vs angular — see "Tolerance policy & dimension-type families" below).
+
+A **`ToleranceDecision`** (models.py) carries three things: an optional dimensional `Tolerance` (the ± size band), a tuple of `GeometricTolerance`s (GD&T feature control frames — characteristic · zone · ⌀ · datums · material condition), and an optional `rationale`. One feature can get both a size ± and a position FCF, which is why the seam returns the richer decision rather than a bare `Tolerance`. Thin wrappers preserve the old callers: `tolerance_for(f) → Tolerance | None` returns `.dimensional`; `decide_with_rationale(f) → (Tolerance | None, rationale)` drops the geometric list.
 
 ```
 extract.iter_dimensions(model)   →  yields (displayDim, idim, tol_obj, Feature)
        │   └─ geometry.resolve_geometry(displayDim, view) → Feature.geometry (3D context)
        │
-decide.tolerance_for(feature)    →  Tolerance | None    ← swap point
-   └─ decide.decide_with_rationale(feature)             (skip rules, then dispatch)
-          └─ active predictor(feature, family) → (Tolerance | None, rationale | None)
-                 ├─ decide.constant_tolerance        (default / universal fallback)
-                 ├─ predict.predict_tolerance        (DeepSeek brain; CLI installs it)
+decide.decide_for(feature)       →  ToleranceDecision    ← swap point
+   └─ (skip rules, then dispatch)
+          └─ active predictor(feature, family) → ToleranceDecision
+                 ├─ decide.constant_tolerance        (default / universal fallback; ± only, no GD&T)
+                 ├─ predict.predict_tolerance        (DeepSeek brain; ± + optional GD&T; CLI installs it)
                  └─ <trained model>                  (eventual final predictor)
        │
-apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
+apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM (GD&T write: Phase 4)
 ```
 
-**The skip rules (already-toleranced / reference dim / hole callout / unsupported family) live in `decide.decide_with_rationale`, not in the predictors** — single source of truth, so no predictor (including the LLM) can ever re-tolerance a toleranced dim, add a ± to a reference dim, touch a hole callout, or an unsupported family. A predictor only chooses the *magnitude* for a feature that already passed the skip rules (and may still return `None` to leave it untoleranced). Swap predictors with `decide.set_predictor(fn)` / `decide.use_constant()`; the default is the constant policy, which is why the module stays pure and offline-testable. The optional `rationale` is the predictor's free-text justification (the LLM fills it; the constant policy returns `None`) — recorded in the report and useful as future training signal.
+**The skip rules (already-toleranced / reference dim / hole callout / unsupported family) live in `decide.decide_for`, not in the predictors** — single source of truth, so no predictor (including the LLM) can ever re-tolerance a toleranced dim, add a ± to a reference dim, touch a hole callout, or an unsupported family. A skipped feature returns the empty `ToleranceDecision()` (no ±, no GD&T, no rationale). A predictor only chooses the *decision* for a feature that already passed the skip rules (and may still return an empty decision to leave it untoleranced). Swap predictors with `decide.set_predictor(fn)` / `decide.use_constant()`; the default is the constant policy, which is why the module stays pure and offline-testable. The `rationale` is the predictor's free-text justification (the LLM fills it; the constant policy leaves it `None`) — recorded in the report and useful as future training signal.
 
 `extract` yields a 4-tuple because **Apply needs the live COM handles** (`displayDim`, `idim`, `tol_obj`) to mutate the drawing, while **Decide only needs the pure `Feature`**. Keep this split — don't pass COM objects into `decide`.
 
@@ -68,6 +70,10 @@ apply.write_tolerance(dim, tol)  →  mutates the SW dim via COM
 - **Everything else is skipped** — chamfer, unknown, and any type in neither family (`_family_of` returns `None`). This skip — along with the already-toleranced (`current_tolerance_type != swTolNONE`), reference-dim (`is_reference`), and hole-callout skips — happens in `decide_with_rationale` *before* any predictor runs (see Architecture), so no predictor ever sees them and the tool never overwrites an engineer's existing tolerance.
 
 Any predictor must emit in the family's unit, not one flat number: because the units differ, emitting `0.0005` for an angular dim would be ~0.03°, not 0.5 mm. The constant policy picks the right per-unit default; the DeepSeek predictor is told mm vs degrees and converts its answer back to metres/radians. `harvest.py` collects training data over the same `LENGTH_DIM_TYPES ∪ ANGULAR_DIM_TYPES` so the dataset matches what the apply path handles.
+
+## GD&T (geometric tolerances)
+
+Beyond the dimensional ± band, a predictor may also propose **geometric tolerances** — GD&T feature control frames — in the `geometric` tuple of its `ToleranceDecision`. A **`GeometricTolerance`** (models.py) is `symbol` (the characteristic), `zone_value` (the tolerance zone, a LINEAR distance in **metres** — a geometric zone is always a length, even for an angular feature), `diameter_zone` (a ⌀ cylindrical zone, typical for position), `material_condition` (`RFS`/`MMC`/`LMC` from `MATERIAL_CONDITIONS`), and an ordered `datum_refs` tuple of `DatumRef`s (`letter` + `modifier`). The model is fully general; the **starter set** of characteristics the predictor targets is `GEOMETRIC_SYMBOLS` = flatness, perpendicularity, parallelism, position, concentricity, circular_runout, total_runout. The constant policy proposes none (`geometric=()`); the DeepSeek predictor proposes a frame only when the geometry clearly calls for one (it's told the `Feature.geometry` 3D context and uses it to decide). Geometric *application* — writing the FCF to the drawing via `InsertGtol` — lands in Phase 4; today the frames are recorded in the report and (Phase 3) harvested as labels. `predict._parse_geometric` is defensive: it drops any frame with an unknown characteristic, a non-numeric zone, or a malformed datum rather than failing the whole prediction.
 
 ## What the predictor sees (the `Feature`)
 
@@ -102,7 +108,7 @@ These family sets are seeded from the hardcoded `swDimensionType_e` integers in 
 
 ## The JSONL report
 
-Written to `<output>.report.jsonl` next to the output drawing. First line is a header (`schema_version`, `active_config`, `input`, `tool_version`, `policy`); each subsequent line is one record per dimension (`feature`, `action` ∈ `{applied, skipped, failed}`, `tolerance`, `error`, `rationale`). `policy` is `"constant"` or `"llm:<model-id>"` so a report self-documents which predictor produced it; `rationale` is the predictor's justification string (LLM only, else `null`). The `schema_version` field is the forward-compat hook for using these records as training data later — bump it if you change the record shape. **Current: `schema_version: 4`** (v2 added `policy` to the header and `rationale` to each record in the LLM-predictor change; v3 grew the embedded `feature` with `is_reference`/`text_prefix`/`text_suffix`; v4 grew it with the nested `geometry` 3D-model context).
+Written to `<output>.report.jsonl` next to the output drawing. First line is a header (`schema_version`, `active_config`, `input`, `tool_version`, `policy`); each subsequent line is one record per dimension (`feature`, `action` ∈ `{applied, skipped, failed}`, `tolerance`, `geometric`, `error`, `rationale`). `action` tracks the *dimensional* ± write; `geometric` is the list of proposed GD&T feature control frames (empty list when none) — recorded now, written to the drawing in Phase 4. `policy` is `"constant"` or `"llm:<model-id>"` so a report self-documents which predictor produced it; `rationale` is the predictor's justification string (LLM only, else `null`). The `schema_version` field is the forward-compat hook for using these records as training data later — bump it if you change the record shape. **Current: `schema_version: 5`** (v2 added `policy` to the header and `rationale` to each record in the LLM-predictor change; v3 grew the embedded `feature` with `is_reference`/`text_prefix`/`text_suffix`; v4 grew it with the nested `geometry` 3D-model context; v5 added the `geometric` GD&T list to each record).
 
 `harvest.py` writes a **separate** JSONL shape — the training dataset, not the apply report. Header: `schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`; each record is `{source_file, feature, label}` (the `label` is the harvested `Tolerance`). It carries its own `kind` + `schema_version`; bump that `schema_version` independently if the record shape changes. **Current: `schema_version: 3`** (v2 grew the `feature` with the richer display fields; v3 added the nested `geometry` 3D-model context).
 

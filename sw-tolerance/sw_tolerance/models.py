@@ -15,7 +15,7 @@ releases.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Optional
+from typing import Final, Optional, Tuple
 
 # swDocumentTypes_e.swDocDRAWING
 SW_DOC_DRAWING: int = 3
@@ -150,6 +150,68 @@ class Feature:
 
 @dataclass(frozen=True)
 class Tolerance:
+    """A bilateral dimensional tolerance — a ± band on a dimension's value."""
     tol_type: int
     plus_value: float
     minus_value: float
+
+
+# Geometric (GD&T) characteristics the predictor may propose. String-valued, like
+# the geometry taxonomies above: the model is fully general, but the predictor and
+# constant policy target this starter set first (form: flatness; orientation:
+# perpendicularity, parallelism; location: position, concentricity; runout). The
+# extract/apply COM layers map these onto swGtolSymbol enum values. Keep the
+# vocabulary stable — it's part of the report and dataset schema.
+GEOMETRIC_SYMBOLS: Final = frozenset({
+    "flatness", "perpendicularity", "parallelism",
+    "position", "concentricity", "circular_runout", "total_runout",
+})
+# Material-condition modifiers (feature-of-size / datum-reference): regardless of
+# feature size (RFS), at maximum material condition (MMC), at least material (LMC).
+MATERIAL_CONDITIONS: Final = frozenset({"RFS", "MMC", "LMC"})
+
+
+@dataclass(frozen=True)
+class DatumRef:
+    """One datum reference in a feature control frame (e.g. B at MMC).
+
+    ``letter`` is the datum label ("A"/"B"/"C"); ``modifier`` is its material
+    condition. Order matters in a frame — primary, then secondary, then tertiary —
+    so these are held in an ordered tuple on GeometricTolerance.
+    """
+    letter: str
+    modifier: str = "RFS"
+
+
+@dataclass(frozen=True)
+class GeometricTolerance:
+    """One geometric tolerance (a feature control frame): characteristic, zone,
+    optional ⌀ zone, material condition, and ordered datum references.
+
+    Pure and COM-free like Tolerance, so it serialises into the report and the
+    harvest dataset via ``asdict`` and is unit-testable on macOS. The zone is a
+    LINEAR distance in METRES (a geometric tolerance zone is always a length,
+    even for orientation/location of an angular feature), mirroring the metres
+    convention Tolerance uses for length dims.
+    """
+    symbol: str                                  # one of GEOMETRIC_SYMBOLS
+    zone_value: float                            # tolerance zone width, in metres
+    diameter_zone: bool = False                  # ⌀ (cylindrical) zone, e.g. position
+    material_condition: str = "RFS"              # one of MATERIAL_CONDITIONS
+    datum_refs: Tuple[DatumRef, ...] = ()        # ordered primary/secondary/tertiary
+
+
+@dataclass(frozen=True)
+class ToleranceDecision:
+    """The full output of the swap point for one feature.
+
+    Generalises the seam beyond a bare ± so a single feature (e.g. a hole) can
+    receive BOTH a dimensional size tolerance AND one or more geometric
+    tolerances (a position FCF). ``dimensional`` is None to leave the value
+    untoleranced; ``geometric`` is empty when no FCF applies. ``rationale`` is the
+    predictor's free-text justification (the LLM fills it; the constant policy
+    leaves it None) — recorded in the report and useful as future training signal.
+    """
+    dimensional: Optional[Tolerance] = None
+    geometric: Tuple[GeometricTolerance, ...] = ()
+    rationale: Optional[str] = None

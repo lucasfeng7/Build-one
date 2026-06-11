@@ -20,9 +20,9 @@ from typing import Optional
 
 from sw_tolerance import __version__
 from sw_tolerance.apply import SaveFailed, rebuild_and_save, write_tolerance
-from sw_tolerance.decide import decide_with_rationale, set_predictor
+from sw_tolerance.decide import decide_for, set_predictor
 from sw_tolerance.extract import get_active_config_name, iter_dimensions
-from sw_tolerance.models import Feature, Tolerance
+from sw_tolerance.models import Feature, GeometricTolerance, Tolerance
 from sw_tolerance.sw_client import (
     OpenFailed,
     SolidWorksUnavailable,
@@ -125,22 +125,28 @@ def _process(model, out_path: str, input_path: str, report_path: Path, policy: s
         _write_header(fh, config_name, input_path, policy)
 
         for _disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
-            tolerance, rationale = decide_with_rationale(feat)
+            decision = decide_for(feat)
+            tolerance = decision.dimensional
+            geometric = decision.geometric
+            rationale = decision.rationale
+            # `action` tracks the dimensional ± write. Geometric tolerances are
+            # recorded as proposals on every record; actually writing them to the
+            # drawing (InsertGtol) lands in Phase 4.
             if tolerance is None:
                 skipped += 1
                 _write_record(fh, feat, action="skipped", tolerance=None,
-                              error=None, rationale=rationale)
+                              error=None, rationale=rationale, geometric=geometric)
                 continue
             try:
                 write_tolerance(tol_obj, tolerance)
             except Exception as e:
                 failed += 1
                 _write_record(fh, feat, action="failed", tolerance=tolerance,
-                              error=str(e), rationale=rationale)
+                              error=str(e), rationale=rationale, geometric=geometric)
                 continue
             applied += 1
             _write_record(fh, feat, action="applied", tolerance=tolerance,
-                          error=None, rationale=rationale)
+                          error=None, rationale=rationale, geometric=geometric)
 
     rebuild_and_save(model, out_path)
 
@@ -158,7 +164,9 @@ def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
         # record's embedded `feature` shape changed.
         # v4: Feature gained nested `geometry` (GeometryContext) — 3D-model
         # context resolved from the part behind the drawing.
-        "schema_version": 4,
+        # v5: each record gained a `geometric` list — proposed GD&T feature
+        # control frames (applied to the drawing in Phase 4).
+        "schema_version": 5,
         "active_config": config_name,
         "input": input_path,
         "tool_version": __version__,
@@ -174,11 +182,15 @@ def _write_record(
     tolerance: Optional[Tolerance],
     error: Optional[str],
     rationale: Optional[str] = None,
+    geometric: tuple[GeometricTolerance, ...] = (),
 ) -> None:
     fh.write(json.dumps({
         "feature": asdict(feat),
         "action": action,
         "tolerance": asdict(tolerance) if tolerance else None,
+        # Proposed GD&T frames (empty list when none); applied to the drawing
+        # in Phase 4, recorded as training/inspection signal now.
+        "geometric": [asdict(g) for g in geometric],
         "error": error,
         "rationale": rationale,
     }) + "\n")
