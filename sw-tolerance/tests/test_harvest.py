@@ -192,6 +192,7 @@ class HarvestOrchestrationTests(unittest.TestCase):
         out = os.path.join(self.tmp, "dataset.jsonl")
         with mock.patch.object(harvest, "open_drawing", fake_open), \
              mock.patch.object(harvest, "iter_dimensions", lambda m: iter(dims)), \
+             mock.patch.object(harvest, "iter_geometric_tolerances", lambda m: iter([])), \
              mock.patch.object(harvest, "read_existing_tolerance", _fake_read_tol):
             rc = _harvest_all(None, ["/x/a.slddrw"], "/x", Path(out))
 
@@ -221,6 +222,7 @@ class HarvestOrchestrationTests(unittest.TestCase):
         with mock.patch.object(harvest, "open_drawing", fake_open), \
              mock.patch.object(harvest, "iter_dimensions",
                                lambda m: iter([_feat(SW_LINEAR_DIM, "has_tol")])), \
+             mock.patch.object(harvest, "iter_geometric_tolerances", lambda m: iter([])), \
              mock.patch.object(harvest, "read_existing_tolerance", _fake_read_tol):
             rc = _harvest_all(
                 None,

@@ -30,12 +30,18 @@ from pathlib import Path
 from typing import Optional
 
 from sw_tolerance import __version__
-from sw_tolerance.extract import iter_dimensions, read_existing_tolerance
+from sw_tolerance.extract import (
+    iter_dimensions,
+    iter_geometric_tolerances,
+    read_existing_tolerance,
+)
 from sw_tolerance.models import (
     ANGULAR_DIM_TYPES,
     LENGTH_DIM_TYPES,
     SW_TOL_NONE,
     Feature,
+    GeometricTolerance,
+    GeometryContext,
     Tolerance,
 )
 
@@ -57,7 +63,9 @@ EXIT_VALIDATION_ERROR = 3
 # so each record's `feature` shape changed.
 # v3: Feature gained nested `geometry` (GeometryContext) — 3D-model context
 # resolved from the part behind the drawing.
-SCHEMA_VERSION = 3
+# v4: dataset now also carries geometric (GD&T) records — each record gained a
+# `label_type` ("dimensional" | "geometric") discriminating the two shapes.
+SCHEMA_VERSION = 4
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -137,6 +145,7 @@ def _harvest_drawing(sw, path: str, fh) -> int:
     """Harvest one drawing, writing labeled records. Returns the record count."""
     written = 0
     with open_drawing(sw, path) as model:
+        # Dimensional (±) labels — one per toleranced dimension of a handled family.
         for _disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
             if feat.dim_type not in HARVEST_DIM_TYPES:
                 continue
@@ -145,11 +154,17 @@ def _harvest_drawing(sw, path: str, fh) -> int:
                 continue
             fh.write(json.dumps(_build_record(feat, label, path)) + "\n")
             written += 1
+        # Geometric (GD&T) labels — one per existing feature control frame, with
+        # the 3D geometry it attaches to as the input context.
+        for gtol, geo, view_name, sheet_name in iter_geometric_tolerances(model):
+            record = _build_geometric_record(geo, gtol, view_name, sheet_name, path)
+            fh.write(json.dumps(record) + "\n")
+            written += 1
     return written
 
 
 def _build_record(feat: Feature, label: Tolerance, source_file: str) -> dict:
-    """Pure: build one dataset record.
+    """Pure: build one dimensional dataset record.
 
     The feature is recorded as the model will see it at inference time —
     current_tolerance_type normalised to swTolNONE — so harvesting a toleranced
@@ -159,7 +174,34 @@ def _build_record(feat: Feature, label: Tolerance, source_file: str) -> dict:
     inference_feat = replace(feat, current_tolerance_type=SW_TOL_NONE)
     return {
         "source_file": source_file,
+        "label_type": "dimensional",
         "feature": asdict(inference_feat),
+        "label": asdict(label),
+    }
+
+
+def _build_geometric_record(
+    geo: Optional[GeometryContext],
+    label: GeometricTolerance,
+    view_name: str,
+    sheet_name: str,
+    source_file: str,
+) -> dict:
+    """Pure: build one geometric (GD&T) dataset record.
+
+    A geometric tolerance attaches to a feature/face, not a valued dimension, so
+    its input `feature` is the 3D geometry context (plus locating view/sheet),
+    not a `Feature`. No label leak is possible — the geometry is independent of
+    the tolerance. The real frame is the label.
+    """
+    return {
+        "source_file": source_file,
+        "label_type": "geometric",
+        "feature": {
+            "view_name": view_name,
+            "sheet_name": sheet_name,
+            "geometry": asdict(geo) if geo is not None else None,
+        },
         "label": asdict(label),
     }
 

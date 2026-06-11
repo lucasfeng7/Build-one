@@ -37,8 +37,21 @@ def resolve_geometry(disp_dim, view) -> Optional[GeometryContext]:
     unknown"); partial success returns a context with the resolved fields set and
     the rest left at their ``unknown`` / None defaults.
     """
+    return _resolve(_safe_attached_face(disp_dim), view)
+
+
+def resolve_geometry_from_annotation(ann, view) -> Optional[GeometryContext]:
+    """Like ``resolve_geometry`` but starting from an ``IAnnotation`` directly.
+
+    Used by the GD&T harvest path: a geometric tolerance attaches to a feature
+    control frame's annotation, not to a display dimension, but the face → surface
+    → feature resolution beyond that point is identical.
+    """
+    return _resolve(_safe_face_from_annotation(ann), view)
+
+
+def _resolve(face, view) -> Optional[GeometryContext]:
     referenced_model = _safe_referenced_model(view)
-    face = _safe_attached_face(disp_dim)
     surface_type, nominal_diameter = _safe_surface(face)
     feature_kind, hole_standard, is_internal = _safe_feature(face)
 
@@ -95,8 +108,21 @@ def _safe_attached_face(disp_dim):
     adjacent face of an attached edge). The precise chain by which a *drawing*
     dimension reaches *model* topology is a first-run unknown.
     """
+    return _safe_face_from_annotation(_safe_annotation(disp_dim))
+
+
+def _safe_annotation(disp_dim):
     try:
-        ann = call(disp_dim, "GetAnnotation")
+        return call(disp_dim, "GetAnnotation")
+    except Exception:
+        return None
+
+
+def _safe_face_from_annotation(ann):
+    """A face from an annotation's attached entities (directly, or via an edge)."""
+    if ann is None:
+        return None
+    try:
         entities = call(ann, "GetAttachedEntities3")
     except Exception:
         return None

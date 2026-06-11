@@ -54,7 +54,7 @@ Example:
 python sw-tolerance\harvest.py C:\drawings\historical C:\datasets\tolerances.jsonl
 ```
 
-It walks every `.slddrw` directly in `<input_dir>`, and for each linear dimension that already carries a tolerance, writes one record `{source_file, feature, label}`. The first line is a header (`schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`). A bad drawing is logged and skipped so the rest of the batch still produces a dataset (exit code 2 signals that some files failed).
+It walks every `.slddrw` directly in `<input_dir>` and writes one record per existing tolerance, each tagged with a `label_type`: **`"dimensional"`** for a ± band an engineer applied to a dimension (`label` is a `Tolerance`), and **`"geometric"`** for an existing GD&T feature control frame (`label` is a `GeometricTolerance`, and the input `feature` is the 3D geometry the frame attaches to). The first line is a header (`schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`). A bad drawing is logged and skipped so the rest of the batch still produces a dataset (exit code 2 signals that some files failed).
 
 The recorded `feature.current_tolerance_type` is normalised to "untoleranced" — i.e. what the model will see at inference time — so harvesting a toleranced dim never leaks the answer into the inputs. The real tolerance lives in `label`.
 
