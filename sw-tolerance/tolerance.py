@@ -156,7 +156,9 @@ def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
     fh.write(json.dumps({
         # v3: Feature gained is_reference / text_prefix / text_suffix, so each
         # record's embedded `feature` shape changed.
-        "schema_version": 3,
+        # v4: Feature gained nested `geometry` (GeometryContext) — 3D-model
+        # context resolved from the part behind the drawing.
+        "schema_version": 4,
         "active_config": config_name,
         "input": input_path,
         "tool_version": __version__,

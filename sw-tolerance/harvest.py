@@ -55,7 +55,9 @@ EXIT_VALIDATION_ERROR = 3
 
 # v2: Feature gained richer fields (is_reference, text_prefix, text_suffix),
 # so each record's `feature` shape changed.
-SCHEMA_VERSION = 2
+# v3: Feature gained nested `geometry` (GeometryContext) — 3D-model context
+# resolved from the part behind the drawing.
+SCHEMA_VERSION = 3
 
 
 def main(argv: Optional[list[str]] = None) -> int:

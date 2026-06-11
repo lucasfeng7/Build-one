@@ -108,10 +108,11 @@ sw-tolerance\
 ├── harvest.py               CLI entry: read-only training-data harvester
 ├── requirements.txt
 ├── sw_tolerance\
-│   ├── models.py            Feature, Tolerance, SW_* constants
+│   ├── models.py            Feature, GeometryContext, Tolerance, SW_* constants
 │   ├── decide.py            pure policy — the swap point
 │   ├── sw_client.py         COM connect + open/close lifecycle
 │   ├── extract.py           sheets -> views -> dims; read_existing_tolerance
+│   ├── geometry.py          resolve 3D-model context behind each dimension
 │   └── apply.py             tolerance write, rebuild + SaveAs3
 ├── tests\                   decide, com, apply, validate, harvest, read-tol
 └── test_drawings\           drop fixture .slddrw files here

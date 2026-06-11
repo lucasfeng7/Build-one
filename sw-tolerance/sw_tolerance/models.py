@@ -15,7 +15,7 @@ releases.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Optional
 
 # swDocumentTypes_e.swDocDRAWING
 SW_DOC_DRAWING: int = 3
@@ -72,6 +72,53 @@ LENGTH_DIM_TYPES: Final = LINEAR_DIM_TYPES | frozenset({
 ANGULAR_DIM_TYPES: Final = frozenset({SW_ANGULAR_DIM})
 
 
+# Feature-kind taxonomy stored in GeometryContext.feature_kind. String-valued
+# (not an int enum) because it's a *derived* classification, not a SolidWorks
+# enum: the extractor maps a 3D feature/face onto one of these, the predictor
+# reasons over them, and the ML model will one-hot them. Keep the vocabulary
+# small and stable — adding a value is a (harmless) dataset-schema change.
+FEATURE_KIND_VALUES: Final = frozenset({
+    "hole_clearance", "hole_tapped", "counterbore", "countersink",
+    "boss", "fillet", "chamfer", "planar_face", "cylindrical_face", "unknown",
+})
+# Surface-type taxonomy stored in GeometryContext.surface_type, from the
+# ISurface.IsPlane/IsCylinder/IsCone family.
+SURFACE_TYPE_VALUES: Final = frozenset({
+    "plane", "cylinder", "cone", "other", "unknown",
+})
+
+
+@dataclass(frozen=True)
+class GeometryContext:
+    """3D-model context resolved from the part behind a drawing dimension.
+
+    Populated by the (COM-bearing, heavily guarded) ``geometry.resolve_geometry``
+    from the faces/feature a display dimension attaches to in the referenced part.
+    This is what lets the predictor tell a precision bore from a rough slot, and
+    is the input that makes intelligent GD&T selection possible.
+
+    Every field defaults so extraction degrades gracefully: a missing/over-version
+    COM member, or a dimension whose view references an assembly (parts-only for
+    now), yields a partly- or wholly-``unknown`` context rather than dropping the
+    dimension. Kept COM-free and pure (invariant #1) so it serialises into the
+    report and harvest dataset via ``asdict`` and is unit-testable on macOS.
+
+    Fields:
+    - feature_kind: one of FEATURE_KIND_VALUES — what the dim measures.
+    - surface_type: one of SURFACE_TYPE_VALUES — the attached face's surface.
+    - nominal_diameter: cylinder diameter in METRES (Feature units), else None.
+    - is_internal: True for a hole/bore, False for a boss/shaft, None if unknown.
+    - hole_standard: Hole Wizard designation (e.g. "M6", "⌀6.6"), else "".
+    - referenced_model: the part the dim's view references (filename), else "".
+    """
+    feature_kind: str = "unknown"
+    surface_type: str = "unknown"
+    nominal_diameter: Optional[float] = None
+    is_internal: Optional[bool] = None
+    hole_standard: str = ""
+    referenced_model: str = ""
+
+
 @dataclass(frozen=True)
 class Feature:
     value: float
@@ -93,6 +140,12 @@ class Feature:
     is_reference: bool = False
     text_prefix: str = ""
     text_suffix: str = ""
+    # 3D-model context resolved from the part behind the drawing (see
+    # GeometryContext). None when geometry resolution wholly fails, so a
+    # dimension that extracted fine in 2D is never lost. asdict() serialises the
+    # nested dataclass recursively, so it flows into the report and the harvest
+    # dataset automatically — which is why adding it bumps both schema versions.
+    geometry: Optional[GeometryContext] = None
 
 
 @dataclass(frozen=True)

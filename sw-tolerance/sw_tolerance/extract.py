@@ -5,6 +5,7 @@ import sys
 from typing import Iterator, Optional, Tuple
 
 from .com import call
+from .geometry import resolve_geometry
 from .models import (
     SW_DIM_TEXT_PREFIX,
     SW_DIM_TEXT_SUFFIX,
@@ -40,7 +41,7 @@ def _iter_sheet(drawing, sheet_name: str) -> Iterator[DimTuple]:
 def _iter_view(view, view_name: str, sheet_name: str) -> Iterator[DimTuple]:
     disp_dim = call(view, "GetFirstDisplayDimension5")
     while disp_dim is not None:
-        built = _build_feature(disp_dim, view_name, sheet_name)
+        built = _build_feature(disp_dim, view, view_name, sheet_name)
         if built is not None:
             feat, idim, tol = built
             yield disp_dim, idim, tol, feat
@@ -48,7 +49,7 @@ def _iter_view(view, view_name: str, sheet_name: str) -> Iterator[DimTuple]:
 
 
 def _build_feature(
-    disp_dim, view_name: str, sheet_name: str
+    disp_dim, view, view_name: str, sheet_name: str
 ) -> Optional[Tuple[Feature, object, object]]:
     try:
         dim_type = int(disp_dim.Type2)
@@ -63,6 +64,10 @@ def _build_feature(
     # (see _display_attrs) so a missing/over-version COM member degrades to the
     # field default rather than dropping a dimension that extracted fine above.
     is_reference, text_prefix, text_suffix = _display_attrs(disp_dim)
+    # 3D-model context from the part behind the view; resolve_geometry never
+    # raises (returns None on total failure), so it can't cost a dimension that
+    # extracted fine above.
+    geometry = resolve_geometry(disp_dim, view)
     feat = Feature(
         value=value,
         dim_type=dim_type,
@@ -72,6 +77,7 @@ def _build_feature(
         is_reference=is_reference,
         text_prefix=text_prefix,
         text_suffix=text_suffix,
+        geometry=geometry,
     )
     return feat, idim, tol
 
