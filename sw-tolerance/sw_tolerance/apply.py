@@ -1,13 +1,23 @@
 """Write tolerances back to a SolidWorks drawing via COM."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
-from .models import Tolerance
+from .com import call
+from .models import GeometricTolerance, Tolerance
 
 
 class SaveFailed(RuntimeError):
     """Every save strategy returned an error or raised a COM exception."""
+
+
+class GtolWriteFailed(RuntimeError):
+    """Inserting or populating a geometric-tolerance frame failed."""
+
+
+# Material-condition text suffixes, the inverse of extract._extract_modifier.
+# RFS is implicit (no symbol), so it contributes no suffix.
+_MOD_SUFFIX = {"MMC": "(M)", "LMC": "(L)", "RFS": ""}
 
 
 # swSaveAsOptions_e.swSaveAsOptions_Silent — hardcoded; not consistently exposed
@@ -55,6 +65,69 @@ def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
         # (MinValue, MaxValue) order as SetValues2. If this also fails it
         # raises, and the caller records the dimension as failed.
         tol_obj.SetValues(min_value, max_value)
+
+
+def write_geometric_tolerance(model, disp_dim, gtol: GeometricTolerance) -> None:
+    """Insert a GD&T feature control frame for the dimension's feature.
+
+    Best-effort COM and a first-run unknown (confirm on Windows): select the
+    geometry the dimension attaches to, insert an ``IGtol`` via the model
+    extension, and populate its first frame from ``gtol``. Symmetric with the
+    harvest read — the frame text comes from ``frame_values``, the inverse of
+    ``extract._build_geometric_tolerance``. Raises ``GtolWriteFailed`` (or lets a
+    COM error propagate) on any failure, so the caller records the frame as
+    ``failed`` via its per-item try/except, exactly like ``write_tolerance``.
+    """
+    _select_for_gtol(disp_dim)
+    gtol_obj = _insert_gtol(model)
+    if gtol_obj is None:
+        raise GtolWriteFailed("InsertGtol returned None")
+    _set_frame(gtol_obj, frame_values(gtol))
+
+
+def frame_values(gtol: GeometricTolerance) -> List[str]:
+    """The first frame's text values ``[symbol, tolerance, *datums]``. Pure.
+
+    The inverse of ``extract._build_geometric_tolerance``'s parse, so the encoding
+    is round-trippable and verifiable on macOS independent of the COM write:
+    a ⌀ prefix for a diameter zone, the zone in millimetres, a material-condition
+    suffix, and one entry per ordered datum with its own modifier suffix.
+    """
+    tol_text = "⌀" if gtol.diameter_zone else ""
+    tol_text += _format_zone_mm(gtol.zone_value * 1000.0)
+    tol_text += _MOD_SUFFIX.get(gtol.material_condition, "")
+    datums = [d.letter + _MOD_SUFFIX.get(d.modifier, "") for d in gtol.datum_refs]
+    return [gtol.symbol, tol_text] + datums
+
+
+def _format_zone_mm(value_mm: float) -> str:
+    """Zone magnitude in mm, trailing zeros trimmed (e.g. 0.2000 → "0.2")."""
+    text = f"{value_mm:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _select_for_gtol(disp_dim) -> None:
+    """Select the dimension (so InsertGtol attaches the frame to its geometry).
+
+    ``Select2`` takes arguments (a real callable under both bindings); falls back
+    to selecting the underlying annotation. Members/signatures are first-run
+    unknowns.
+    """
+    try:
+        disp_dim.Select2(False, 0)
+    except Exception:
+        ann = call(disp_dim, "GetAnnotation")
+        ann.Select3(False, None)
+
+
+def _insert_gtol(model):
+    """Insert an empty IGtol on the active view via the model extension."""
+    return call(model.Extension, "InsertGtol")
+
+
+def _set_frame(gtol_obj, values: List[str]) -> None:
+    """Populate the IGtol's first frame — the inverse of GetFrameValues2(0)."""
+    gtol_obj.SetFrameValues2(0, values)
 
 
 def rebuild_and_save(model, out_path: str) -> None:

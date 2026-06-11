@@ -38,7 +38,7 @@ python sw-tolerance\tolerance.py C:\drawings\bracket.slddrw C:\drawings\bracket_
 
 SolidWorks does not need to be open beforehand — the CLI launches it via COM. The first run after installing pywin32 may take a few seconds longer while it builds the SolidWorks type-library cache.
 
-A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, and `error`.
+A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`, `policy`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, `geometric` (the GD&T frames written for that feature, each with its own `action`/`error`), `error`, and `rationale`.
 
 ## Harvest training data
 
@@ -64,7 +64,7 @@ The recorded `feature.current_tolerance_type` is normalised to "untoleranced" �
 |------|---------|
 | 0 | All dimensions handled (applied + skipped, no failures) |
 | 1 | Unrecoverable: SolidWorks unavailable, `OpenDoc6` failed, or `SaveAs3` failed |
-| 2 | Ran with per-dim apply failures (partial result still saved) |
+| 2 | Ran with per-item write failures — a dimensional ± or a GD&T frame failed (partial result still saved) |
 | 3 | Validation error: bad path, output already exists, or input == output |
 
 ## Architecture

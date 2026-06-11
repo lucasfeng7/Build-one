@@ -19,10 +19,15 @@ from pathlib import Path
 from typing import Optional
 
 from sw_tolerance import __version__
-from sw_tolerance.apply import SaveFailed, rebuild_and_save, write_tolerance
+from sw_tolerance.apply import (
+    SaveFailed,
+    rebuild_and_save,
+    write_geometric_tolerance,
+    write_tolerance,
+)
 from sw_tolerance.decide import decide_for, set_predictor
 from sw_tolerance.extract import get_active_config_name, iter_dimensions
-from sw_tolerance.models import Feature, GeometricTolerance, Tolerance
+from sw_tolerance.models import Feature, Tolerance
 from sw_tolerance.sw_client import (
     OpenFailed,
     SolidWorksUnavailable,
@@ -119,43 +124,55 @@ def _validate_paths(input_path: str, output_path: str) -> int:
 
 def _process(model, out_path: str, input_path: str, report_path: Path, policy: str) -> int:
     applied = skipped = failed = 0
+    geo_applied = geo_failed = 0
     config_name = get_active_config_name(model)
 
     with report_path.open("w", encoding="utf-8") as fh:
         _write_header(fh, config_name, input_path, policy)
 
-        for _disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
+        for disp_dim, _idim, tol_obj, feat in iter_dimensions(model):
             decision = decide_for(feat)
             tolerance = decision.dimensional
-            geometric = decision.geometric
             rationale = decision.rationale
-            # `action` tracks the dimensional ± write. Geometric tolerances are
-            # recorded as proposals on every record; actually writing them to the
-            # drawing (InsertGtol) lands in Phase 4.
+
+            # The dimensional ± write (action), tracked as before.
             if tolerance is None:
+                dim_action, dim_error = "skipped", None
                 skipped += 1
-                _write_record(fh, feat, action="skipped", tolerance=None,
-                              error=None, rationale=rationale, geometric=geometric)
-                continue
-            try:
-                write_tolerance(tol_obj, tolerance)
-            except Exception as e:
-                failed += 1
-                _write_record(fh, feat, action="failed", tolerance=tolerance,
-                              error=str(e), rationale=rationale, geometric=geometric)
-                continue
-            applied += 1
-            _write_record(fh, feat, action="applied", tolerance=tolerance,
-                          error=None, rationale=rationale, geometric=geometric)
+            else:
+                try:
+                    write_tolerance(tol_obj, tolerance)
+                    dim_action, dim_error = "applied", None
+                    applied += 1
+                except Exception as e:
+                    dim_action, dim_error = "failed", str(e)
+                    failed += 1
+
+            # Each proposed GD&T frame is written independently and recorded with
+            # its own outcome, so one bad frame neither blocks the others nor the
+            # dimensional write.
+            geo_results = []
+            for g in decision.geometric:
+                try:
+                    write_geometric_tolerance(model, disp_dim, g)
+                    geo_results.append((g, "applied", None))
+                    geo_applied += 1
+                except Exception as e:
+                    geo_results.append((g, "failed", str(e)))
+                    geo_failed += 1
+
+            _write_record(fh, feat, action=dim_action, tolerance=tolerance,
+                          error=dim_error, rationale=rationale, geometric=geo_results)
 
     rebuild_and_save(model, out_path)
 
     print(
-        f"policy={policy} applied={applied} skipped={skipped} failed={failed}",
+        f"policy={policy} applied={applied} skipped={skipped} failed={failed} "
+        f"gtol_applied={geo_applied} gtol_failed={geo_failed}",
         file=sys.stderr,
     )
     print(f"report: {report_path}", file=sys.stderr)
-    return EXIT_PARTIAL_FAILURE if failed > 0 else EXIT_OK
+    return EXIT_PARTIAL_FAILURE if (failed > 0 or geo_failed > 0) else EXIT_OK
 
 
 def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
@@ -166,7 +183,9 @@ def _write_header(fh, config_name: str, input_path: str, policy: str) -> None:
         # context resolved from the part behind the drawing.
         # v5: each record gained a `geometric` list — proposed GD&T feature
         # control frames (applied to the drawing in Phase 4).
-        "schema_version": 5,
+        # v6: each `geometric` entry became an object {tolerance, action, error}
+        # recording the per-frame write outcome (InsertGtol now runs).
+        "schema_version": 6,
         "active_config": config_name,
         "input": input_path,
         "tool_version": __version__,
@@ -182,15 +201,18 @@ def _write_record(
     tolerance: Optional[Tolerance],
     error: Optional[str],
     rationale: Optional[str] = None,
-    geometric: tuple[GeometricTolerance, ...] = (),
+    geometric: tuple = (),
 ) -> None:
     fh.write(json.dumps({
         "feature": asdict(feat),
         "action": action,
         "tolerance": asdict(tolerance) if tolerance else None,
-        # Proposed GD&T frames (empty list when none); applied to the drawing
-        # in Phase 4, recorded as training/inspection signal now.
-        "geometric": [asdict(g) for g in geometric],
+        # One entry per GD&T frame (empty list when none): the proposed frame
+        # plus its per-frame write outcome.
+        "geometric": [
+            {"tolerance": asdict(g), "action": g_action, "error": g_error}
+            for g, g_action, g_error in geometric
+        ],
         "error": error,
         "rationale": rationale,
     }) + "\n")
