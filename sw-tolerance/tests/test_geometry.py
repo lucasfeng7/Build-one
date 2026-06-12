@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import unittest
 
-from sw_tolerance import geometry
 from sw_tolerance.geometry import (
     _as_list,
-    _basename,
     _classify_feature_typename,
     _classify_surface,
     _cylinder_diameter,
     _safe_feature,
-    _safe_referenced_model,
     _safe_surface,
+    referenced_model_of,
     resolve_geometry,
 )
 from sw_tolerance.models import (
@@ -158,15 +156,6 @@ class FakeView:
 
 # --- pure helpers -----------------------------------------------------------
 
-class BasenameTests(unittest.TestCase):
-    def test_windows_and_posix_separators(self):
-        self.assertEqual(_basename(r"C:\\drawings\\bracket.SLDPRT"), "bracket.SLDPRT")
-        self.assertEqual(_basename("/home/u/bracket.SLDPRT"), "bracket.SLDPRT")
-
-    def test_bare_name_unchanged(self):
-        self.assertEqual(_basename("bracket.SLDPRT"), "bracket.SLDPRT")
-
-
 class AsListTests(unittest.TestCase):
     def test_none_tuple_single(self):
         self.assertEqual(_as_list(None), [])
@@ -228,14 +217,18 @@ class SurfaceTests(unittest.TestCase):
 class ReferencedModelTests(unittest.TestCase):
     def test_from_referenced_document_path(self):
         view = FakeView(ref_doc=FakeDoc(r"C:\\parts\\bracket.SLDPRT"))
-        self.assertEqual(_safe_referenced_model(view), "bracket.SLDPRT")
+        self.assertEqual(referenced_model_of(view), "bracket.SLDPRT")
+
+    def test_posix_separators_also_handled(self):
+        view = FakeView(ref_doc=FakeDoc("/exports/bracket.SLDPRT"))
+        self.assertEqual(referenced_model_of(view), "bracket.SLDPRT")
 
     def test_falls_back_to_model_name(self):
         view = FakeView(model_name="lever.SLDPRT")
-        self.assertEqual(_safe_referenced_model(view), "lever.SLDPRT")
+        self.assertEqual(referenced_model_of(view), "lever.SLDPRT")
 
     def test_degrades_to_empty(self):
-        self.assertEqual(_safe_referenced_model(object()), "")
+        self.assertEqual(referenced_model_of(object()), "")
 
 
 # --- feature resolution -----------------------------------------------------

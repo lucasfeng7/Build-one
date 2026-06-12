@@ -17,6 +17,7 @@ surface/feature) is a first-run unknown — confirm/adjust on Windows.
 """
 from __future__ import annotations
 
+import ntpath
 from typing import List, Optional, Tuple
 
 from .com import call
@@ -29,39 +30,37 @@ _SW_SEL_EDGES: int = 1
 _SW_SEL_FACES: int = 2
 
 
-def resolve_geometry(disp_dim, view) -> Optional[GeometryContext]:
+def resolve_geometry(disp_dim, view, referenced_model: Optional[str] = None) -> Optional[GeometryContext]:
     """Best-effort ``GeometryContext`` for a dimension, or None if nothing resolved.
 
     Never raises. A total failure returns None (so ``Feature.geometry`` stays
     None and the caller can distinguish "no geometry" from "geometry says
     unknown"); partial success returns a context with the resolved fields set and
     the rest left at their ``unknown`` / None defaults.
+
+    ``referenced_model`` is view-level data — callers iterating many dimensions
+    on one view should resolve it once via ``referenced_model_of(view)`` and pass
+    it in, instead of paying the COM reads per dimension. Left None, it is
+    resolved here.
     """
-    return _resolve(_safe_attached_face(disp_dim), view)
+    return _resolve(_safe_attached_face(disp_dim), view, referenced_model)
 
 
-def resolve_geometry_from_annotation(ann, view) -> Optional[GeometryContext]:
+def resolve_geometry_from_annotation(ann, view, referenced_model: Optional[str] = None) -> Optional[GeometryContext]:
     """Like ``resolve_geometry`` but starting from an ``IAnnotation`` directly.
 
     Used by the GD&T harvest path: a geometric tolerance attaches to a feature
     control frame's annotation, not to a display dimension, but the face → surface
     → feature resolution beyond that point is identical.
     """
-    return _resolve(_safe_face_from_annotation(ann), view)
+    return _resolve(_safe_face_from_annotation(ann), view, referenced_model)
 
 
-def _resolve(face, view) -> Optional[GeometryContext]:
-    referenced_model = _safe_referenced_model(view)
+def _resolve(face, view, referenced_model: Optional[str]) -> Optional[GeometryContext]:
+    if referenced_model is None:
+        referenced_model = referenced_model_of(view)
     surface_type, nominal_diameter = _safe_surface(face)
     feature_kind, hole_standard, is_internal = _safe_feature(face)
-
-    if (
-        not referenced_model
-        and face is None
-        and surface_type == "unknown"
-        and feature_kind == "unknown"
-    ):
-        return None
 
     # A bare surface classification is still useful signal when the owning
     # feature couldn't be identified: reflect it in feature_kind.
@@ -70,7 +69,7 @@ def _resolve(face, view) -> Optional[GeometryContext]:
     elif feature_kind == "unknown" and surface_type == "plane":
         feature_kind = "planar_face"
 
-    return GeometryContext(
+    ctx = GeometryContext(
         feature_kind=feature_kind,
         surface_type=surface_type,
         nominal_diameter=nominal_diameter,
@@ -78,23 +77,32 @@ def _resolve(face, view) -> Optional[GeometryContext]:
         hole_standard=hole_standard,
         referenced_model=referenced_model,
     )
+    # Zero information resolved → None, so consumers can rely on a non-None
+    # context carrying at least one real signal. Exact by construction: the
+    # default GeometryContext IS the all-unknown context.
+    return None if ctx == GeometryContext() else ctx
 
 
 # --- view → referenced part -------------------------------------------------
 
-def _safe_referenced_model(view) -> str:
-    """Filename of the part the view references, or "" (parts-only)."""
+def referenced_model_of(view) -> str:
+    """Filename of the part the view references, or "" (parts-only).
+
+    Public so per-view iterators (extract.py) can resolve this once and pass it
+    to resolve_geometry* for every dimension/annotation on the view.
+    ntpath.basename handles both Windows and POSIX separators on any host.
+    """
     try:
         doc = getattr(view, "ReferencedDocument", None)
         if doc is not None:
             path = call(doc, "GetPathName")
             if path:
-                return _basename(str(path))
+                return ntpath.basename(str(path))
     except Exception:
         pass
     try:
         name = call(view, "GetReferencedModelName")
-        return _basename(str(name)) if name else ""
+        return ntpath.basename(str(name)) if name else ""
     except Exception:
         return ""
 
@@ -266,8 +274,3 @@ def _as_list(entities) -> List:
     if isinstance(entities, (tuple, list)):
         return list(entities)
     return [entities]
-
-
-def _basename(path: str) -> str:
-    """Filename from a path, handling both Windows and POSIX separators."""
-    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]

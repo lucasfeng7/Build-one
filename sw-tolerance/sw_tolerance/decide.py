@@ -12,8 +12,8 @@ A predictor returns a `ToleranceDecision`: an optional bilateral `Tolerance`
 (the ± size band), a tuple of `GeometricTolerance`s (GD&T feature control
 frames), and an optional rationale. One feature can receive both — a hole gets a
 size ± and a position FCF — which is why the seam returns the richer decision
-rather than a bare `Tolerance`. `tolerance_for` stays as a thin `.dimensional`
-wrapper so existing callers keep working.
+rather than a bare `Tolerance`. `tolerance_for` is the thin `.dimensional` view
+for callers that only need the ± band.
 
 The default predictor is the constant policy, so this module stays pure and
 unit-testable on macOS with no network and no SolidWorks. The CLI swaps in the
@@ -23,7 +23,7 @@ imports (invariant #1); `predict` is imported lazily by callers, never here.
 from __future__ import annotations
 
 import math
-from typing import Callable, Final, Optional, Tuple
+from typing import Callable, Final, Optional
 
 from .models import (
     ANGULAR_DIM_TYPES,
@@ -117,15 +117,6 @@ def decide_for(f: Feature) -> ToleranceDecision:
     if family is None:
         return _NO_TOLERANCE
     return _active_predictor(f, family)
-
-
-def decide_with_rationale(f: Feature) -> Tuple[Optional[Tolerance], Optional[str]]:
-    """Backward-compatible (dimensional tolerance, rationale) view of decide_for.
-
-    Drops the geometric tolerances; callers that need GD&T use decide_for.
-    """
-    decision = decide_for(f)
-    return decision.dimensional, decision.rationale
 
 
 def tolerance_for(f: Feature) -> Optional[Tolerance]:

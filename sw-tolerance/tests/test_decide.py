@@ -11,7 +11,6 @@ import unittest
 from sw_tolerance.decide import (
     constant_tolerance,
     decide_for,
-    decide_with_rationale,
     set_predictor,
     tolerance_for,
     use_constant,
@@ -133,9 +132,9 @@ class PredictorSeamTests(unittest.TestCase):
 
     def test_rationale_is_passed_through(self):
         set_predictor(lambda f, family: ToleranceDecision(dimensional=None, rationale="left as-is"))
-        tol, rationale = decide_with_rationale(_feature())
-        self.assertIsNone(tol)
-        self.assertEqual(rationale, "left as-is")
+        decision = decide_for(_feature())
+        self.assertIsNone(decision.dimensional)
+        self.assertEqual(decision.rationale, "left as-is")
 
     def test_geometric_tolerances_flow_through_decide_for(self):
         # A predictor can return GD&T frames alongside (or instead of) a ±; they
