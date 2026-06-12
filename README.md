@@ -111,9 +111,10 @@ sw-tolerance\
 │   ├── models.py            Feature, GeometryContext, Tolerance, SW_* constants
 │   ├── decide.py            pure policy — the swap point
 │   ├── sw_client.py         COM connect + open/close lifecycle
-│   ├── extract.py           sheets -> views -> dims; read_existing_tolerance
+│   ├── extract.py           sheets -> views -> dims + GD&T frames (read)
 │   ├── geometry.py          resolve 3D-model context behind each dimension
-│   └── apply.py             tolerance write, rebuild + SaveAs3
+│   ├── gtol_text.py         GD&T frame-text codec (encode + decode, one place)
+│   └── apply.py             tolerance + GD&T frame write, rebuild + save
 ├── tests\                   decide, com, apply, validate, harvest, read-tol
 └── test_drawings\           drop fixture .slddrw files here
 ```

@@ -13,11 +13,10 @@ import unittest
 
 from sw_tolerance.apply import (
     GtolWriteFailed,
-    frame_values,
     write_geometric_tolerance,
     write_tolerance,
 )
-from sw_tolerance.extract import _build_geometric_tolerance
+from sw_tolerance.gtol_text import build_geometric_tolerance, frame_values
 from sw_tolerance.models import (
     SW_TOL_BILAT,
     DatumRef,
@@ -119,14 +118,15 @@ class FrameValuesTests(unittest.TestCase):
         self.assertEqual(frame_values(g), ["flatness", "0.05"])
 
     def test_round_trips_through_the_harvest_parser(self):
-        # frame_values (write) is the inverse of _build_geometric_tolerance
-        # (read): encoding then parsing must reproduce the original frame.
+        # frame_values (encode) is the inverse of build_geometric_tolerance
+        # (decode) — both sides of the gtol_text codec: encoding then parsing
+        # must reproduce the original frame.
         original = GeometricTolerance(
             symbol="perpendicularity", zone_value=0.0001, diameter_zone=False,
             material_condition="LMC",
             datum_refs=(DatumRef("A"), DatumRef("C", "MMC")),
         )
-        parsed = _build_geometric_tolerance(frame_values(original))
+        parsed = build_geometric_tolerance(frame_values(original))
         self.assertEqual(parsed, original)
 
 

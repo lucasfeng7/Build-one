@@ -1,18 +1,20 @@
 """Walk a SolidWorks drawing: display dimensions and geometric (GD&T) tolerances."""
 from __future__ import annotations
 
-import re
 import sys
 from typing import Iterator, List, Optional, Tuple
 
 from .com import call
-from .geometry import resolve_geometry, resolve_geometry_from_annotation
+from .geometry import (
+    referenced_model_of,
+    resolve_geometry,
+    resolve_geometry_from_annotation,
+)
+from .gtol_text import build_geometric_tolerance
 from .models import (
-    GEOMETRIC_SYMBOLS,
     SW_DIM_TEXT_PREFIX,
     SW_DIM_TEXT_SUFFIX,
     SW_TOL_NONE,
-    DatumRef,
     Feature,
     GeometricTolerance,
     GeometryContext,
@@ -40,7 +42,7 @@ def iter_geometric_tolerances(drawing) -> Iterator[GtolTuple]:
     first-run unknown (see read_geometric_tolerance).
     """
     for view, view_name, sheet_name in _iter_views(drawing):
-        for label, geo in _iter_view_gtols(view):
+        for label, geo in iter_view_geometric_tolerances(view):
             yield label, geo, view_name, sheet_name
 
 
@@ -67,9 +69,12 @@ def _iter_views(drawing) -> Iterator[Tuple[object, str, str]]:
 
 
 def _iter_view(view, view_name: str, sheet_name: str) -> Iterator[DimTuple]:
+    # The referenced part is a property of the VIEW, so resolve it once here
+    # rather than via COM for every dimension on the view.
+    ref_model = referenced_model_of(view)
     disp_dim = call(view, "GetFirstDisplayDimension5")
     while disp_dim is not None:
-        built = _build_feature(disp_dim, view, view_name, sheet_name)
+        built = _build_feature(disp_dim, view, ref_model, view_name, sheet_name)
         if built is not None:
             feat, idim, tol = built
             yield disp_dim, idim, tol, feat
@@ -77,7 +82,7 @@ def _iter_view(view, view_name: str, sheet_name: str) -> Iterator[DimTuple]:
 
 
 def _build_feature(
-    disp_dim, view, view_name: str, sheet_name: str
+    disp_dim, view, ref_model: str, view_name: str, sheet_name: str
 ) -> Optional[Tuple[Feature, object, object]]:
     try:
         dim_type = int(disp_dim.Type2)
@@ -95,7 +100,7 @@ def _build_feature(
     # 3D-model context from the part behind the view; resolve_geometry never
     # raises (returns None on total failure), so it can't cost a dimension that
     # extracted fine above.
-    geometry = resolve_geometry(disp_dim, view)
+    geometry = resolve_geometry(disp_dim, view, referenced_model=ref_model)
     feat = Feature(
         value=value,
         dim_type=dim_type,
@@ -204,34 +209,16 @@ def get_active_config_name(model) -> str:
 #
 # Geometric tolerances are NOT display dimensions: they are separate IGtol
 # annotations on a view. This block walks them read-only for harvest. The COM
-# read sits behind one guarded seam (`_gtol_frame`); the parsing/mapping below it
-# is pure and unit-tested on macOS.
-
-# Map the symbol text SolidWorks reports (or our own canonical name) onto a
-# GEOMETRIC_SYMBOLS value. Keyed on lowercased text so it tolerates the variants
-# and abbreviations a frame's symbol field may carry. The canonical names map to
-# themselves so a value already in our vocabulary passes straight through.
-_SYMBOL_BY_NAME: dict = {name: name for name in GEOMETRIC_SYMBOLS}
-_SYMBOL_BY_NAME.update({
-    "perpendicular": "perpendicularity",
-    "parallel": "parallelism",
-    "true position": "position",
-    "concentric": "concentricity",
-    "runout": "circular_runout",
-    "circular run-out": "circular_runout",
-    "total run-out": "total_runout",
-})
-
-_MODIFIER_TOKENS = (("(M)", "MMC"), ("(L)", "LMC"), ("(S)", "RFS"),
-                    ("Ⓜ", "MMC"), ("Ⓛ", "LMC"), ("Ⓢ", "RFS"))
+# read sits behind one guarded seam (`_gtol_frame`); the frame-text decoding is
+# `gtol_text.build_geometric_tolerance` — the shared codec whose encode side
+# (`gtol_text.frame_values`) apply.py writes with, so read and write can't drift.
 
 
 def iter_view_geometric_tolerances(view) -> Iterator[Tuple[GeometricTolerance, Optional[GeometryContext]]]:
-    """Public per-view variant used in tests; drawing-level walk is iter_geometric_tolerances."""
-    yield from _iter_view_gtols(view)
-
-
-def _iter_view_gtols(view) -> Iterator[Tuple[GeometricTolerance, Optional[GeometryContext]]]:
+    """Yield (label, geometry) for every usable IGtol frame on one view."""
+    # The referenced part is a property of the VIEW — resolve once per view,
+    # not per annotation (mirrors _iter_view).
+    ref_model = referenced_model_of(view)
     ann = _safe(view, "GetFirstAnnotation2")
     while ann is not None:
         # GetSpecificAnnotation yields the typed object (IGtol for a frame);
@@ -241,7 +228,8 @@ def _iter_view_gtols(view) -> Iterator[Tuple[GeometricTolerance, Optional[Geomet
         if gtol is not None:
             label = read_geometric_tolerance(gtol)
             if label is not None:
-                yield label, resolve_geometry_from_annotation(ann, view)
+                geo = resolve_geometry_from_annotation(ann, view, referenced_model=ref_model)
+                yield label, geo
         ann = _safe(ann, "GetNext2")
 
 
@@ -250,11 +238,12 @@ def read_geometric_tolerance(gtol) -> Optional[GeometricTolerance]:
 
     The single COM read is ``IGtol.GetFrameValues2(0)`` (the first frame's text
     values: symbol, tolerance, then datums) — a first-run unknown to confirm on
-    Windows; everything below it is pure text parsing. Returns None when the
-    symbol isn't a recognised characteristic or the zone isn't a number, so a
-    non-gtol annotation (or an unparseable frame) is silently skipped.
+    Windows; the decoding below it is the pure ``gtol_text`` codec. Returns None
+    when the symbol isn't a recognised characteristic or the zone isn't a
+    number, so a non-gtol annotation (or an unparseable frame) is silently
+    skipped.
     """
-    return _build_geometric_tolerance(_gtol_frame(gtol))
+    return build_geometric_tolerance(_gtol_frame(gtol))
 
 
 def _gtol_frame(gtol) -> List[str]:
@@ -267,71 +256,6 @@ def _gtol_frame(gtol) -> List[str]:
         return []
     seq = list(values) if isinstance(values, (tuple, list)) else [values]
     return [str(v) for v in seq]
-
-
-def _build_geometric_tolerance(values: List[str]) -> Optional[GeometricTolerance]:
-    """Pure: assemble a GeometricTolerance from a frame's text values."""
-    if not values:
-        return None
-    symbol = _symbol_from_value(values[0])
-    if symbol is None:
-        return None
-    zone, diameter, material = _parse_zone(values[1]) if len(values) > 1 else (None, False, "RFS")
-    if zone is None:
-        return None
-    datums = tuple(d for d in (_parse_datum(v) for v in values[2:]) if d is not None)
-    return GeometricTolerance(
-        symbol=symbol,
-        zone_value=zone,
-        diameter_zone=diameter,
-        material_condition=material,
-        datum_refs=datums,
-    )
-
-
-def _symbol_from_value(value) -> Optional[str]:
-    """Map a frame's symbol text to a GEOMETRIC_SYMBOLS value, or None."""
-    if value is None:
-        return None
-    return _SYMBOL_BY_NAME.get(str(value).strip().lower())
-
-
-def _parse_zone(text) -> Tuple[Optional[float], bool, str]:
-    """Parse a tolerance value text like "⌀0.2(M)" → (metres, is_⌀, material)."""
-    s = str(text).strip()
-    diameter = s.startswith("⌀") or s.upper().startswith("DIA")
-    material = _extract_modifier(s)
-    number = _first_number(s)
-    if number is None:
-        return None, diameter, material
-    return number / 1000.0, diameter, material
-
-
-def _parse_datum(text) -> Optional[DatumRef]:
-    """Parse a datum text like "B(M)" → DatumRef("B", "MMC"); "" / non-letter → None."""
-    s = str(text).strip()
-    if not s or not s[0].isalpha():
-        return None
-    return DatumRef(letter=s[0].upper(), modifier=_extract_modifier(s))
-
-
-def _extract_modifier(text) -> str:
-    """Material condition embedded in a value/datum text, defaulting to RFS."""
-    u = str(text).upper()
-    for token, condition in _MODIFIER_TOKENS:
-        if token in u:
-            return condition
-    return "RFS"
-
-
-def _first_number(text) -> Optional[float]:
-    m = re.search(r"[-+]?\d*\.?\d+", str(text))
-    if not m:
-        return None
-    try:
-        return abs(float(m.group()))
-    except ValueError:
-        return None
 
 
 def _safe(obj, name: str):

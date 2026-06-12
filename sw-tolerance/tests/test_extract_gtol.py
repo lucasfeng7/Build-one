@@ -1,6 +1,6 @@
 """Unit tests for geometric-tolerance (GD&T) extraction — COM-free.
 
-Covers the pure frame-text parsing/mapping, the single guarded COM read
+Covers the pure frame-text codec (gtol_text), the single guarded COM read
 (GetFrameValues2) via a fake IGtol, the view annotation walk, and the harvest
 record shape. The real IGtol/annotation COM members are confirmed on Windows.
 Run from the project root with:
@@ -11,14 +11,16 @@ from __future__ import annotations
 import unittest
 
 from sw_tolerance.extract import (
-    _build_geometric_tolerance,
-    _extract_modifier,
-    _first_number,
-    _parse_datum,
-    _parse_zone,
-    _symbol_from_value,
     iter_view_geometric_tolerances,
     read_geometric_tolerance,
+)
+from sw_tolerance.gtol_text import (
+    build_geometric_tolerance,
+    extract_modifier,
+    first_number,
+    parse_datum,
+    parse_zone,
+    symbol_from_value,
 )
 from sw_tolerance.models import DatumRef, GeometricTolerance
 
@@ -28,66 +30,71 @@ from sw_tolerance.models import DatumRef, GeometricTolerance
 class SymbolMappingTests(unittest.TestCase):
     def test_canonical_names_pass_through(self):
         for name in ("position", "flatness", "total_runout"):
-            self.assertEqual(_symbol_from_value(name), name)
+            self.assertEqual(symbol_from_value(name), name)
 
     def test_variants_normalise(self):
-        self.assertEqual(_symbol_from_value("Perpendicular"), "perpendicularity")
-        self.assertEqual(_symbol_from_value("true position"), "position")
-        self.assertEqual(_symbol_from_value("Concentric"), "concentricity")
+        self.assertEqual(symbol_from_value("Perpendicular"), "perpendicularity")
+        self.assertEqual(symbol_from_value("true position"), "position")
+        self.assertEqual(symbol_from_value("Concentric"), "concentricity")
 
     def test_unknown_and_none(self):
-        self.assertIsNone(_symbol_from_value("bogus"))
-        self.assertIsNone(_symbol_from_value(None))
+        self.assertIsNone(symbol_from_value("bogus"))
+        self.assertIsNone(symbol_from_value(None))
 
 
 class ModifierAndNumberTests(unittest.TestCase):
     def test_modifier_tokens(self):
-        self.assertEqual(_extract_modifier("⌀0.2(M)"), "MMC")
-        self.assertEqual(_extract_modifier("B(L)"), "LMC")
-        self.assertEqual(_extract_modifier("A"), "RFS")
+        self.assertEqual(extract_modifier("⌀0.2(M)"), "MMC")
+        self.assertEqual(extract_modifier("B(L)"), "LMC")
+        self.assertEqual(extract_modifier("A"), "RFS")
 
-    def test_first_number(self):
-        self.assertAlmostEqual(_first_number("⌀0.2(M)"), 0.2)
-        self.assertAlmostEqual(_first_number("0.05"), 0.05)
-        self.assertIsNone(_first_number("ABC"))
+    def testfirst_number(self):
+        self.assertAlmostEqual(first_number("⌀0.2(M)"), 0.2)
+        self.assertAlmostEqual(first_number("0.05"), 0.05)
+        self.assertIsNone(first_number("ABC"))
 
 
 class ParseZoneTests(unittest.TestCase):
     def test_diameter_zone_with_modifier(self):
-        zone, dia, mat = _parse_zone("⌀0.2(M)")
+        zone, dia, mat = parse_zone("⌀0.2(M)")
         self.assertAlmostEqual(zone, 0.0002)  # 0.2 mm → m
         self.assertTrue(dia)
         self.assertEqual(mat, "MMC")
 
     def test_plain_zone(self):
-        zone, dia, mat = _parse_zone("0.05")
+        zone, dia, mat = parse_zone("0.05")
         self.assertAlmostEqual(zone, 0.00005)
         self.assertFalse(dia)
         self.assertEqual(mat, "RFS")
 
     def test_dia_prefix_word(self):
-        _, dia, _ = _parse_zone("DIA0.1")
+        _, dia, _ = parse_zone("DIA0.1")
         self.assertTrue(dia)
 
+    def test_dia_must_be_a_prefix_word_not_a_longer_word(self):
+        # "DIA" followed by a letter is some other word, not the ⌀ abbreviation.
+        _, dia, _ = parse_zone("DIALOG0.5")
+        self.assertFalse(dia)
+
     def test_unparseable_zone(self):
-        self.assertEqual(_parse_zone("n/a"), (None, False, "RFS"))
+        self.assertEqual(parse_zone("n/a"), (None, False, "RFS"))
 
 
 class ParseDatumTests(unittest.TestCase):
     def test_plain_and_modified(self):
-        self.assertEqual(_parse_datum("A"), DatumRef("A", "RFS"))
-        self.assertEqual(_parse_datum("B(M)"), DatumRef("B", "MMC"))
+        self.assertEqual(parse_datum("A"), DatumRef("A", "RFS"))
+        self.assertEqual(parse_datum("B(M)"), DatumRef("B", "MMC"))
 
     def test_empty_or_nonletter(self):
-        self.assertIsNone(_parse_datum(""))
-        self.assertIsNone(_parse_datum("0.5"))
+        self.assertIsNone(parse_datum(""))
+        self.assertIsNone(parse_datum("0.5"))
 
 
 # --- frame assembly ---------------------------------------------------------
 
 class BuildGeometricToleranceTests(unittest.TestCase):
     def test_position_with_datums(self):
-        g = _build_geometric_tolerance(["position", "⌀0.2(M)", "A", "B(M)", "C"])
+        g = build_geometric_tolerance(["position", "⌀0.2(M)", "A", "B(M)", "C"])
         self.assertEqual(g.symbol, "position")
         self.assertAlmostEqual(g.zone_value, 0.0002)
         self.assertTrue(g.diameter_zone)
@@ -96,20 +103,20 @@ class BuildGeometricToleranceTests(unittest.TestCase):
         self.assertEqual(g.datum_refs[1].modifier, "MMC")
 
     def test_flatness_no_datums(self):
-        g = _build_geometric_tolerance(["flatness", "0.05"])
+        g = build_geometric_tolerance(["flatness", "0.05"])
         self.assertEqual(g.symbol, "flatness")
         self.assertAlmostEqual(g.zone_value, 0.00005)
         self.assertFalse(g.diameter_zone)
         self.assertEqual(g.datum_refs, ())
 
     def test_unknown_symbol_rejected(self):
-        self.assertIsNone(_build_geometric_tolerance(["bogus", "0.1"]))
+        self.assertIsNone(build_geometric_tolerance(["bogus", "0.1"]))
 
     def test_missing_zone_rejected(self):
-        self.assertIsNone(_build_geometric_tolerance(["position"]))
+        self.assertIsNone(build_geometric_tolerance(["position"]))
 
     def test_empty_rejected(self):
-        self.assertIsNone(_build_geometric_tolerance([]))
+        self.assertIsNone(build_geometric_tolerance([]))
 
 
 # --- COM read seam + annotation walk (fake COM) -----------------------------

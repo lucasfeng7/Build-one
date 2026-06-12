@@ -27,9 +27,9 @@ import sys
 from typing import Tuple
 
 from .decide import LENGTH, constant_tolerance
+from .gtol_text import normalize_condition
 from .models import (
     GEOMETRIC_SYMBOLS,
-    MATERIAL_CONDITIONS,
     SW_TOL_BILAT,
     DatumRef,
     Feature,
@@ -89,32 +89,21 @@ def _client():
 
 
 # Per-process memoisation: drawings repeat identical dims, and the policy is a
-# pure function of the feature, so identical (type, family, rounded value) tuples
-# cost a single API call. Rounding collapses float noise from COM extraction.
+# pure function of what the model is shown, so the cache is keyed on the exact
+# (family, prompt) pair. Keying on the prompt itself — rather than a separate
+# feature-field tuple — makes a key/prompt mismatch impossible by construction:
+# two dims hit the same slot exactly when the model would see the same question.
 _cache: dict = {}
-
-
-def _cache_key(f: Feature, family: str) -> tuple:
-    # Include the inputs the prompt actually varies on — annotation text and 3D
-    # geometry context — so two dims that share (type, value) but differ in
-    # feature kind/size don't collapse to one cached answer.
-    g = f.geometry
-    geo_key = (
-        (g.feature_kind, g.surface_type,
-         round(g.nominal_diameter, 9) if g.nominal_diameter is not None else None,
-         g.is_internal, g.hole_standard)
-        if g is not None else None
-    )
-    return (f.dim_type, family, round(f.value, 9), f.text_prefix, f.text_suffix, geo_key)
 
 
 def predict_tolerance(f: Feature, family: str) -> ToleranceDecision:
     """DeepSeek-backed predictor. Falls back to the constant policy on any error."""
-    key = _cache_key(f, family)
+    user_msg = _user_message(f, family)
+    key = (family, user_msg)
     if key in _cache:
         return _cache[key]
     try:
-        result = _query(f, family)
+        result = _query(family, user_msg)
     except Exception as e:  # noqa: BLE001 — any failure degrades to the constant policy
         print(
             f"WARNING: LLM tolerance prediction failed ({e!r}); "
@@ -126,7 +115,8 @@ def predict_tolerance(f: Feature, family: str) -> ToleranceDecision:
     return result
 
 
-def _query(f: Feature, family: str) -> ToleranceDecision:
+def _user_message(f: Feature, family: str) -> str:
+    """The per-dimension prompt. Pure — also serves as the cache key."""
     is_length = family == LENGTH
     unit = "mm" if is_length else "degrees"
     # SolidWorks stores lengths in metres and angles in radians; the model reasons
@@ -146,7 +136,11 @@ def _query(f: Feature, family: str) -> ToleranceDecision:
     if geo_line:
         lines.append(geo_line)
     lines.append(f"Decide the size tolerance (in {unit}) and any geometric tolerances.")
-    user_msg = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _query(family: str, user_msg: str) -> ToleranceDecision:
+    is_length = family == LENGTH
     model = os.environ.get("SW_TOLERANCE_MODEL", DEFAULT_MODEL)
     resp = _client().chat.completions.create(
         model=model,
@@ -192,7 +186,7 @@ def _geometry_line(f: Feature) -> str:
         bits.append("internal (hole/bore)" if g.is_internal else "external (boss/shaft)")
     if g.hole_standard:
         bits.append(f"hole standard {g.hole_standard}")
-    return "Geometry context: " + "; ".join(bits) + "." if bits else ""
+    return ("Geometry context: " + "; ".join(bits) + ".") if bits else ""
 
 
 def _parse_geometric(items) -> Tuple[GeometricTolerance, ...]:
@@ -218,7 +212,7 @@ def _parse_geometric(items) -> Tuple[GeometricTolerance, ...]:
             symbol=symbol,
             zone_value=zone,
             diameter_zone=bool(it.get("diameter_zone", False)),
-            material_condition=_norm_condition(it.get("material_condition")),
+            material_condition=normalize_condition(it.get("material_condition")),
             datum_refs=_parse_datums(it.get("datums")),
         ))
     return tuple(out)
@@ -234,11 +228,5 @@ def _parse_datums(items) -> Tuple[DatumRef, ...]:
         except (KeyError, TypeError, ValueError):
             continue
         if letter:
-            refs.append(DatumRef(letter=letter, modifier=_norm_condition(d.get("modifier"))))
+            refs.append(DatumRef(letter=letter, modifier=normalize_condition(d.get("modifier"))))
     return tuple(refs)
-
-
-def _norm_condition(value) -> str:
-    """Normalise a material condition to one of MATERIAL_CONDITIONS (default RFS)."""
-    candidate = str(value).strip().upper() if value is not None else ""
-    return candidate if candidate in MATERIAL_CONDITIONS else "RFS"
