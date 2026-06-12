@@ -1,13 +1,19 @@
 """Write tolerances back to a SolidWorks drawing via COM."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
-from .models import Tolerance
+from .com import call
+from .gtol_text import frame_values
+from .models import GeometricTolerance, Tolerance
 
 
 class SaveFailed(RuntimeError):
     """Every save strategy returned an error or raised a COM exception."""
+
+
+class GtolWriteFailed(RuntimeError):
+    """Inserting or populating a geometric-tolerance frame failed."""
 
 
 # swSaveAsOptions_e.swSaveAsOptions_Silent — hardcoded; not consistently exposed
@@ -55,6 +61,53 @@ def write_tolerance(tol_obj, tolerance: Tolerance) -> None:
         # (MinValue, MaxValue) order as SetValues2. If this also fails it
         # raises, and the caller records the dimension as failed.
         tol_obj.SetValues(min_value, max_value)
+
+
+def write_geometric_tolerance(model, disp_dim, gtol: GeometricTolerance) -> None:
+    """Insert a GD&T feature control frame for the dimension's feature.
+
+    Best-effort COM and a first-run unknown (confirm on Windows): select the
+    geometry the dimension attaches to, insert an ``IGtol`` via the model
+    extension, and populate its first frame from ``gtol_text.frame_values`` —
+    the shared codec whose decode side the harvest read uses, so write and read
+    can never drift apart. Raises ``GtolWriteFailed`` (or lets a COM error
+    propagate) on any failure, so the caller records the frame as ``failed`` via
+    its per-item try/except, exactly like ``write_tolerance``.
+    """
+    _select_for_gtol(disp_dim)
+    gtol_obj = _insert_gtol(model)
+    if gtol_obj is None:
+        raise GtolWriteFailed("InsertGtol returned None")
+    _set_frame(gtol_obj, frame_values(gtol))
+
+
+def _select_for_gtol(disp_dim) -> None:
+    """Select the dimension (so InsertGtol attaches the frame to its geometry).
+
+    ``Select2`` takes arguments (a real callable under both bindings); falls back
+    to selecting the underlying annotation. Members/signatures are first-run
+    unknowns. Raises ``GtolWriteFailed`` when neither path can select, so the
+    caller logs a meaningful error rather than an AttributeError on None.
+    """
+    try:
+        disp_dim.Select2(False, 0)
+        return
+    except Exception:
+        pass
+    ann = call(disp_dim, "GetAnnotation")
+    if ann is None:
+        raise GtolWriteFailed("could not select dimension geometry (no annotation)")
+    ann.Select3(False, None)
+
+
+def _insert_gtol(model):
+    """Insert an empty IGtol on the active view via the model extension."""
+    return call(model.Extension, "InsertGtol")
+
+
+def _set_frame(gtol_obj, values: List[str]) -> None:
+    """Populate the IGtol's first frame — the inverse of GetFrameValues2(0)."""
+    gtol_obj.SetFrameValues2(0, values)
 
 
 def rebuild_and_save(model, out_path: str) -> None:

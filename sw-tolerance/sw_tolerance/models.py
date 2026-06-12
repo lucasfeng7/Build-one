@@ -15,7 +15,7 @@ releases.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Optional, Tuple
 
 # swDocumentTypes_e.swDocDRAWING
 SW_DOC_DRAWING: int = 3
@@ -72,6 +72,53 @@ LENGTH_DIM_TYPES: Final = LINEAR_DIM_TYPES | frozenset({
 ANGULAR_DIM_TYPES: Final = frozenset({SW_ANGULAR_DIM})
 
 
+# Feature-kind taxonomy stored in GeometryContext.feature_kind. String-valued
+# (not an int enum) because it's a *derived* classification, not a SolidWorks
+# enum: the extractor maps a 3D feature/face onto one of these, the predictor
+# reasons over them, and the ML model will one-hot them. Keep the vocabulary
+# small and stable — adding a value is a (harmless) dataset-schema change.
+FEATURE_KIND_VALUES: Final = frozenset({
+    "hole_clearance", "hole_tapped", "counterbore", "countersink",
+    "boss", "fillet", "chamfer", "planar_face", "cylindrical_face", "unknown",
+})
+# Surface-type taxonomy stored in GeometryContext.surface_type, from the
+# ISurface.IsPlane/IsCylinder/IsCone family.
+SURFACE_TYPE_VALUES: Final = frozenset({
+    "plane", "cylinder", "cone", "other", "unknown",
+})
+
+
+@dataclass(frozen=True)
+class GeometryContext:
+    """3D-model context resolved from the part behind a drawing dimension.
+
+    Populated by the (COM-bearing, heavily guarded) ``geometry.resolve_geometry``
+    from the faces/feature a display dimension attaches to in the referenced part.
+    This is what lets the predictor tell a precision bore from a rough slot, and
+    is the input that makes intelligent GD&T selection possible.
+
+    Every field defaults so extraction degrades gracefully: a missing/over-version
+    COM member, or a dimension whose view references an assembly (parts-only for
+    now), yields a partly- or wholly-``unknown`` context rather than dropping the
+    dimension. Kept COM-free and pure (invariant #1) so it serialises into the
+    report and harvest dataset via ``asdict`` and is unit-testable on macOS.
+
+    Fields:
+    - feature_kind: one of FEATURE_KIND_VALUES — what the dim measures.
+    - surface_type: one of SURFACE_TYPE_VALUES — the attached face's surface.
+    - nominal_diameter: cylinder diameter in METRES (Feature units), else None.
+    - is_internal: True for a hole/bore, False for a boss/shaft, None if unknown.
+    - hole_standard: Hole Wizard designation (e.g. "M6", "⌀6.6"), else "".
+    - referenced_model: the part the dim's view references (filename), else "".
+    """
+    feature_kind: str = "unknown"
+    surface_type: str = "unknown"
+    nominal_diameter: Optional[float] = None
+    is_internal: Optional[bool] = None
+    hole_standard: str = ""
+    referenced_model: str = ""
+
+
 @dataclass(frozen=True)
 class Feature:
     value: float
@@ -93,10 +140,78 @@ class Feature:
     is_reference: bool = False
     text_prefix: str = ""
     text_suffix: str = ""
+    # 3D-model context resolved from the part behind the drawing (see
+    # GeometryContext). None when geometry resolution wholly fails, so a
+    # dimension that extracted fine in 2D is never lost. asdict() serialises the
+    # nested dataclass recursively, so it flows into the report and the harvest
+    # dataset automatically — which is why adding it bumps both schema versions.
+    geometry: Optional[GeometryContext] = None
 
 
 @dataclass(frozen=True)
 class Tolerance:
+    """A bilateral dimensional tolerance — a ± band on a dimension's value."""
     tol_type: int
     plus_value: float
     minus_value: float
+
+
+# Geometric (GD&T) characteristics the predictor may propose. String-valued, like
+# the geometry taxonomies above: the model is fully general, but the predictor and
+# constant policy target this starter set first (form: flatness; orientation:
+# perpendicularity, parallelism; location: position, concentricity; runout). The
+# extract/apply COM layers map these onto swGtolSymbol enum values. Keep the
+# vocabulary stable — it's part of the report and dataset schema.
+GEOMETRIC_SYMBOLS: Final = frozenset({
+    "flatness", "perpendicularity", "parallelism",
+    "position", "concentricity", "circular_runout", "total_runout",
+})
+# Material-condition modifiers (feature-of-size / datum-reference): regardless of
+# feature size (RFS), at maximum material condition (MMC), at least material (LMC).
+MATERIAL_CONDITIONS: Final = frozenset({"RFS", "MMC", "LMC"})
+
+
+@dataclass(frozen=True)
+class DatumRef:
+    """One datum reference in a feature control frame (e.g. B at MMC).
+
+    ``letter`` is the datum label ("A"/"B"/"C"); ``modifier`` is its material
+    condition. Order matters in a frame — primary, then secondary, then tertiary —
+    so these are held in an ordered tuple on GeometricTolerance.
+    """
+    letter: str
+    modifier: str = "RFS"
+
+
+@dataclass(frozen=True)
+class GeometricTolerance:
+    """One geometric tolerance (a feature control frame): characteristic, zone,
+    optional ⌀ zone, material condition, and ordered datum references.
+
+    Pure and COM-free like Tolerance, so it serialises into the report and the
+    harvest dataset via ``asdict`` and is unit-testable on macOS. The zone is a
+    LINEAR distance in METRES (a geometric tolerance zone is always a length,
+    even for orientation/location of an angular feature), mirroring the metres
+    convention Tolerance uses for length dims.
+    """
+    symbol: str                                  # one of GEOMETRIC_SYMBOLS
+    zone_value: float                            # tolerance zone width, in metres
+    diameter_zone: bool = False                  # ⌀ (cylindrical) zone, e.g. position
+    material_condition: str = "RFS"              # one of MATERIAL_CONDITIONS
+    datum_refs: Tuple[DatumRef, ...] = ()        # ordered primary/secondary/tertiary
+
+
+@dataclass(frozen=True)
+class ToleranceDecision:
+    """The full output of the swap point for one feature.
+
+    Generalises the seam beyond a bare ± so a single feature (e.g. a hole) can
+    receive BOTH a dimensional size tolerance AND one or more geometric
+    tolerances (a position FCF). ``dimensional`` is None to leave the value
+    untoleranced; ``geometric`` is empty when no FCF applies. ``rationale`` is the
+    predictor's free-text justification (the LLM fills it; the constant policy
+    leaves it None) — recorded in the report and useful as future training signal.
+    """
+    dimensional: Optional[Tolerance] = None
+    geometric: Tuple[GeometricTolerance, ...] = ()
+    rationale: Optional[str] = None

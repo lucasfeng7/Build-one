@@ -13,7 +13,13 @@ import unittest
 from contextlib import redirect_stderr
 
 from sw_tolerance import predict
-from sw_tolerance.models import SW_ANGULAR_DIM, SW_LINEAR_DIM, SW_TOL_BILAT, Feature
+from sw_tolerance.models import (
+    SW_ANGULAR_DIM,
+    SW_LINEAR_DIM,
+    SW_TOL_BILAT,
+    Feature,
+    GeometryContext,
+)
 
 
 class _FakeMessage:
@@ -93,29 +99,31 @@ class PredictToleranceTests(unittest.TestCase):
 
     def test_length_prediction_converts_mm_to_metres(self):
         _install({"apply": True, "plus": 0.1, "minus": 0.2, "reason": "fit"})
-        tol, rationale = predict.predict_tolerance(_feature(), "length")
+        decision = predict.predict_tolerance(_feature(), "length")
+        tol = decision.dimensional
         self.assertEqual(tol.tol_type, SW_TOL_BILAT)
         self.assertAlmostEqual(tol.plus_value, 0.0001)   # 0.1 mm → 0.0001 m
         self.assertAlmostEqual(tol.minus_value, 0.0002)  # 0.2 mm → 0.0002 m
-        self.assertEqual(rationale, "fit")
+        self.assertEqual(decision.rationale, "fit")
+        self.assertEqual(decision.geometric, ())  # none proposed
 
     def test_angular_prediction_converts_degrees_to_radians(self):
         _install({"apply": True, "plus": 2.0, "minus": 1.0})
-        tol, _ = predict.predict_tolerance(_feature(dim_type=SW_ANGULAR_DIM), "angular")
+        tol = predict.predict_tolerance(_feature(dim_type=SW_ANGULAR_DIM), "angular").dimensional
         self.assertAlmostEqual(tol.plus_value, math.radians(2.0))
         self.assertAlmostEqual(tol.minus_value, math.radians(1.0))
 
     def test_negative_deviations_are_abs_normalised(self):
         _install({"apply": True, "plus": -0.1, "minus": -0.3})
-        tol, _ = predict.predict_tolerance(_feature(), "length")
+        tol = predict.predict_tolerance(_feature(), "length").dimensional
         self.assertAlmostEqual(tol.plus_value, 0.0001)
         self.assertAlmostEqual(tol.minus_value, 0.0003)
 
     def test_apply_false_returns_none_with_reason(self):
         _install({"apply": False, "reason": "reference dim"})
-        tol, rationale = predict.predict_tolerance(_feature(), "length")
-        self.assertIsNone(tol)
-        self.assertEqual(rationale, "reference dim")
+        decision = predict.predict_tolerance(_feature(), "length")
+        self.assertIsNone(decision.dimensional)
+        self.assertEqual(decision.rationale, "reference dim")
 
     def test_prompt_carries_human_units_and_type(self):
         completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
@@ -141,22 +149,86 @@ class PredictToleranceTests(unittest.TestCase):
         self.assertIn("⌀", user_text)
         self.assertIn("MAX", user_text)
 
+    def test_geometric_proposals_parsed(self):
+        _install({
+            "apply": True, "plus": 0.05, "minus": 0.05,
+            "geometric": [{
+                "symbol": "position", "zone": 0.2, "diameter_zone": True,
+                "material_condition": "MMC",
+                "datums": [{"letter": "A"}, {"letter": "B", "modifier": "MMC"}],
+            }],
+            "reason": "locating hole",
+        })
+        decision = predict.predict_tolerance(_feature(), "length")
+        self.assertEqual(len(decision.geometric), 1)
+        g = decision.geometric[0]
+        self.assertEqual(g.symbol, "position")
+        self.assertAlmostEqual(g.zone_value, 0.0002)  # 0.2 mm → m
+        self.assertTrue(g.diameter_zone)
+        self.assertEqual(g.material_condition, "MMC")
+        self.assertEqual([d.letter for d in g.datum_refs], ["A", "B"])
+        self.assertEqual(g.datum_refs[0].modifier, "RFS")  # defaulted
+        self.assertEqual(g.datum_refs[1].modifier, "MMC")
+
+    def test_geometric_only_without_size_tolerance(self):
+        _install({"apply": False,
+                  "geometric": [{"symbol": "flatness", "zone": 0.1}],
+                  "reason": "datum face"})
+        decision = predict.predict_tolerance(_feature(), "length")
+        self.assertIsNone(decision.dimensional)
+        self.assertEqual([g.symbol for g in decision.geometric], ["flatness"])
+
+    def test_invalid_geometric_entries_are_dropped(self):
+        _install({"apply": True, "plus": 0.05, "minus": 0.05, "geometric": [
+            {"symbol": "bogus", "zone": 0.1},                 # unknown characteristic
+            {"symbol": "flatness"},                            # missing zone
+            {"symbol": "parallelism", "zone": 0.05, "datums": [{"letter": "A"}]},
+        ]})
+        decision = predict.predict_tolerance(_feature(), "length")
+        self.assertEqual([g.symbol for g in decision.geometric], ["parallelism"])
+        self.assertEqual(decision.geometric[0].material_condition, "RFS")  # defaulted
+
+    def test_geometry_context_surfaced_in_prompt(self):
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        geo = GeometryContext(feature_kind="hole_clearance", surface_type="cylinder",
+                              nominal_diameter=0.006, is_internal=True, hole_standard="M6")
+        predict.predict_tolerance(_feature(geometry=geo), "length")
+        user_text = completions.calls[0]["messages"][1]["content"]
+        self.assertIn("Geometry context:", user_text)
+        self.assertIn("hole_clearance", user_text)
+        self.assertIn("Ø6 mm", user_text)
+        self.assertIn("internal", user_text)
+        self.assertIn("M6", user_text)
+
+    def test_no_geometry_line_when_absent(self):
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        predict.predict_tolerance(_feature(), "length")  # geometry=None
+        self.assertNotIn("Geometry context", completions.calls[0]["messages"][1]["content"])
+
+    def test_distinct_geometry_not_collapsed(self):
+        completions = _install({"apply": True, "plus": 0.1, "minus": 0.1})
+        predict.predict_tolerance(_feature(geometry=GeometryContext(feature_kind="boss")), "length")
+        predict.predict_tolerance(
+            _feature(geometry=GeometryContext(feature_kind="hole_clearance")), "length")
+        self.assertEqual(len(completions.calls), 2, "different geometry must not share a cache slot")
+
     def test_client_error_falls_back_to_constant(self):
         _install(raises=RuntimeError("network down"))
         buf = io.StringIO()
         with redirect_stderr(buf):
-            tol, rationale = predict.predict_tolerance(_feature(), "length")
-        # Falls back to the flat ±0.5 mm constant policy, with no rationale.
-        self.assertAlmostEqual(tol.plus_value, 0.0005)
-        self.assertAlmostEqual(tol.minus_value, 0.0005)
-        self.assertIsNone(rationale)
+            decision = predict.predict_tolerance(_feature(), "length")
+        # Falls back to the flat ±0.5 mm constant policy, with no rationale or GD&T.
+        self.assertAlmostEqual(decision.dimensional.plus_value, 0.0005)
+        self.assertAlmostEqual(decision.dimensional.minus_value, 0.0005)
+        self.assertIsNone(decision.rationale)
+        self.assertEqual(decision.geometric, ())
         self.assertIn("WARNING", buf.getvalue())
 
     def test_unparseable_reply_falls_back_to_constant(self):
         _install("this is not json")
         buf = io.StringIO()
         with redirect_stderr(buf):
-            tol, _ = predict.predict_tolerance(_feature(), "length")
+            tol = predict.predict_tolerance(_feature(), "length").dimensional
         self.assertAlmostEqual(tol.plus_value, 0.0005)
         self.assertIn("WARNING", buf.getvalue())
 

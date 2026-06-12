@@ -9,13 +9,16 @@ import math
 import unittest
 
 from sw_tolerance.decide import (
-    decide_with_rationale,
+    constant_tolerance,
+    decide_for,
     set_predictor,
     tolerance_for,
     use_constant,
 )
 from sw_tolerance.models import (
+    GeometricTolerance,
     Tolerance,
+    ToleranceDecision,
     SW_ANGULAR_DIM,
     SW_ARC_LENGTH_DIM,
     SW_DIAMETER_DIM,
@@ -124,25 +127,35 @@ class PredictorSeamTests(unittest.TestCase):
 
     def test_set_predictor_swaps_behavior(self):
         sentinel = Tolerance(tol_type=SW_TOL_BILAT, plus_value=0.123, minus_value=0.456)
-        set_predictor(lambda f, family: (sentinel, "because"))
+        set_predictor(lambda f, family: ToleranceDecision(dimensional=sentinel, rationale="because"))
         self.assertIs(tolerance_for(_feature()), sentinel)
 
     def test_rationale_is_passed_through(self):
-        set_predictor(lambda f, family: (None, "left as-is"))
-        tol, rationale = decide_with_rationale(_feature())
-        self.assertIsNone(tol)
-        self.assertEqual(rationale, "left as-is")
+        set_predictor(lambda f, family: ToleranceDecision(dimensional=None, rationale="left as-is"))
+        decision = decide_for(_feature())
+        self.assertIsNone(decision.dimensional)
+        self.assertEqual(decision.rationale, "left as-is")
+
+    def test_geometric_tolerances_flow_through_decide_for(self):
+        # A predictor can return GD&T frames alongside (or instead of) a ±; they
+        # reach the caller via decide_for but are dropped by the ± wrappers.
+        fcf = GeometricTolerance(symbol="position", zone_value=0.0002, diameter_zone=True)
+        set_predictor(lambda f, family: ToleranceDecision(dimensional=None, geometric=(fcf,)))
+        decision = decide_for(_feature())
+        self.assertEqual(decision.geometric, (fcf,))
+        self.assertIsNone(decision.dimensional)
+        self.assertIsNone(tolerance_for(_feature()))  # ± wrapper ignores geometric
 
     def test_family_is_resolved_for_predictor(self):
         seen = []
 
         def recording_predictor(f, family):
             seen.append(family)
-            return None, None
+            return ToleranceDecision()
 
         set_predictor(recording_predictor)
-        decide_with_rationale(_feature(dim_type=SW_ANGULAR_DIM))
-        decide_with_rationale(_feature(dim_type=SW_LINEAR_DIM))
+        decide_for(_feature(dim_type=SW_ANGULAR_DIM))
+        decide_for(_feature(dim_type=SW_LINEAR_DIM))
         self.assertEqual(seen, ["angular", "length"])
 
     def test_reference_dim_is_skipped(self):
@@ -155,12 +168,20 @@ class PredictorSeamTests(unittest.TestCase):
         # hole callout, or an unsupported family — preserving the harvest/apply
         # invariants.
         calls = []
-        set_predictor(lambda f, family: calls.append(family) or (None, None))
+        set_predictor(lambda f, family: calls.append(family) or ToleranceDecision())
         self.assertIsNone(tolerance_for(_feature(current_tolerance_type=SW_TOL_BILAT)))
         self.assertIsNone(tolerance_for(_feature(is_reference=True)))
         self.assertIsNone(tolerance_for(_feature(is_hole_callout=True)))
         self.assertIsNone(tolerance_for(_feature(dim_type=10)))  # unknown family
         self.assertEqual(calls, [], "predictor must not run for skipped features")
+
+    def test_skipped_feature_returns_empty_decision(self):
+        # The skip rules return a fully-empty decision: no ±, no GD&T, no rationale.
+        decision = decide_for(_feature(current_tolerance_type=SW_TOL_BILAT))
+        self.assertEqual(decision, ToleranceDecision())
+
+    def test_constant_policy_proposes_no_geometric(self):
+        self.assertEqual(constant_tolerance(_feature(), "length").geometric, ())
 
 
 if __name__ == "__main__":

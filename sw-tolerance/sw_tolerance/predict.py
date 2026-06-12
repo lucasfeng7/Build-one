@@ -24,10 +24,19 @@ import json
 import math
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Tuple
 
 from .decide import LENGTH, constant_tolerance
-from .models import SW_TOL_BILAT, Feature, Tolerance
+from .gtol_text import normalize_condition
+from .models import (
+    GEOMETRIC_SYMBOLS,
+    SW_TOL_BILAT,
+    DatumRef,
+    Feature,
+    GeometricTolerance,
+    Tolerance,
+    ToleranceDecision,
+)
 
 # DeepSeek-V3 chat model. Override with SW_TOLERANCE_MODEL (e.g. deepseek-reasoner).
 DEFAULT_MODEL = "deepseek-chat"
@@ -38,16 +47,30 @@ API_KEY_ENV_VARS = ("DEEPSEEK_API_KEY",)
 
 _SYSTEM_PROMPT = (
     "You are a mechanical-engineering tolerancing assistant. You are given a "
-    "single untoleranced dimension from a manufacturing drawing and must decide "
-    "the bilateral tolerance a competent engineer would apply, following common "
-    "shop practice (e.g. ISO 2768 general tolerances): tighter on small or "
-    "precision features, looser on large or coarse ones. Give the plus and minus "
-    "deviations as POSITIVE magnitudes in the SAME unit as the dimension — "
-    "millimetres for length dimensions, degrees for angular dimensions. They may "
-    "be equal (symmetric) or differ. "
+    "single untoleranced dimension from a manufacturing drawing — with the 3D "
+    "feature it measures, when known — and must decide the tolerances a competent "
+    "engineer would apply, following common shop practice (e.g. ISO 2768 general "
+    "tolerances and ASME Y14.5 / ISO 1101 geometric tolerancing): tighter on "
+    "small, precision, or mating features, looser on large or coarse ones.\n"
+    "First, the bilateral SIZE tolerance: give the plus and minus deviations as "
+    "POSITIVE magnitudes in the SAME unit as the dimension — millimetres for "
+    "length dimensions, degrees for angular dimensions. They may be equal "
+    "(symmetric) or differ.\n"
+    "Then, OPTIONALLY, any geometric tolerances (GD&T feature control frames) the "
+    "feature warrants — e.g. position on a hole locating to datums, "
+    "perpendicularity/parallelism/flatness on a datum face, concentricity or "
+    "runout on a turned diameter. Only propose a frame when the geometry clearly "
+    "calls for one; most dimensions need none. Geometric zone values are LINEAR, "
+    "in MILLIMETRES. Use only these characteristics: "
+    + ", ".join(sorted(GEOMETRIC_SYMBOLS)) + ". "
+    "Datums are single letters (A/B/C) in order; material conditions are RFS, "
+    "MMC, or LMC.\n"
     "Respond with ONLY a JSON object with these keys: "
-    '"apply" (boolean — false to leave the dimension untoleranced), '
+    '"apply" (boolean — false to leave the SIZE untoleranced), '
     '"plus" (number), "minus" (number), '
+    '"geometric" (array — possibly empty — of objects with keys "symbol", '
+    '"zone" (number, mm), "diameter_zone" (boolean), "material_condition" '
+    '("RFS"/"MMC"/"LMC"), and "datums" (array of {"letter","modifier"})), '
     '"reason" (string — one concise sentence justifying the choice).'
 )
 
@@ -66,22 +89,21 @@ def _client():
 
 
 # Per-process memoisation: drawings repeat identical dims, and the policy is a
-# pure function of the feature, so identical (type, family, rounded value) tuples
-# cost a single API call. Rounding collapses float noise from COM extraction.
+# pure function of what the model is shown, so the cache is keyed on the exact
+# (family, prompt) pair. Keying on the prompt itself — rather than a separate
+# feature-field tuple — makes a key/prompt mismatch impossible by construction:
+# two dims hit the same slot exactly when the model would see the same question.
 _cache: dict = {}
 
 
-def _cache_key(f: Feature, family: str) -> tuple:
-    return (f.dim_type, family, round(f.value, 9))
-
-
-def predict_tolerance(f: Feature, family: str) -> Tuple[Optional[Tolerance], Optional[str]]:
+def predict_tolerance(f: Feature, family: str) -> ToleranceDecision:
     """DeepSeek-backed predictor. Falls back to the constant policy on any error."""
-    key = _cache_key(f, family)
+    user_msg = _user_message(f, family)
+    key = (family, user_msg)
     if key in _cache:
         return _cache[key]
     try:
-        result = _query(f, family)
+        result = _query(family, user_msg)
     except Exception as e:  # noqa: BLE001 — any failure degrades to the constant policy
         print(
             f"WARNING: LLM tolerance prediction failed ({e!r}); "
@@ -93,7 +115,8 @@ def predict_tolerance(f: Feature, family: str) -> Tuple[Optional[Tolerance], Opt
     return result
 
 
-def _query(f: Feature, family: str) -> Tuple[Optional[Tolerance], Optional[str]]:
+def _user_message(f: Feature, family: str) -> str:
+    """The per-dimension prompt. Pure — also serves as the cache key."""
     is_length = family == LENGTH
     unit = "mm" if is_length else "degrees"
     # SolidWorks stores lengths in metres and angles in radians; the model reasons
@@ -109,8 +132,15 @@ def _query(f: Feature, family: str) -> Tuple[Optional[Tolerance], Optional[str]]
     annotation = " ".join(p for p in (f.text_prefix, f.text_suffix) if p).strip()
     if annotation:
         lines.append(f"Annotation text: {annotation}")
-    lines.append(f"Decide the bilateral tolerance (in {unit}).")
-    user_msg = "\n".join(lines)
+    geo_line = _geometry_line(f)
+    if geo_line:
+        lines.append(geo_line)
+    lines.append(f"Decide the size tolerance (in {unit}) and any geometric tolerances.")
+    return "\n".join(lines)
+
+
+def _query(family: str, user_msg: str) -> ToleranceDecision:
+    is_length = family == LENGTH
     model = os.environ.get("SW_TOLERANCE_MODEL", DEFAULT_MODEL)
     resp = _client().chat.completions.create(
         model=model,
@@ -124,18 +154,79 @@ def _query(f: Feature, family: str) -> Tuple[Optional[Tolerance], Optional[str]]
     )
     data = json.loads(resp.choices[0].message.content)
     reason = data.get("reason")
-    if not data.get("apply", False):
-        return None, reason
-    # abs()-normalise both deviations to positive magnitudes — matches the
-    # Tolerance shape and apply.write_tolerance's sign convention (it negates
-    # the minus value when writing to SolidWorks).
-    plus_h = abs(float(data["plus"]))
-    minus_h = abs(float(data["minus"]))
-    if is_length:
-        plus, minus = plus_h / 1000.0, minus_h / 1000.0
-    else:
-        plus, minus = math.radians(plus_h), math.radians(minus_h)
-    return (
-        Tolerance(tol_type=SW_TOL_BILAT, plus_value=plus, minus_value=minus),
-        reason,
-    )
+    geometric = _parse_geometric(data.get("geometric"))
+    dimensional = None
+    if data.get("apply", False):
+        # abs()-normalise both deviations to positive magnitudes — matches the
+        # Tolerance shape and apply.write_tolerance's sign convention (it negates
+        # the minus value when writing to SolidWorks).
+        plus_h = abs(float(data["plus"]))
+        minus_h = abs(float(data["minus"]))
+        if is_length:
+            plus, minus = plus_h / 1000.0, minus_h / 1000.0
+        else:
+            plus, minus = math.radians(plus_h), math.radians(minus_h)
+        dimensional = Tolerance(tol_type=SW_TOL_BILAT, plus_value=plus, minus_value=minus)
+    return ToleranceDecision(dimensional=dimensional, geometric=geometric, rationale=reason)
+
+
+def _geometry_line(f: Feature) -> str:
+    """One-line 3D-feature context for the prompt, or "" when nothing is known."""
+    g = f.geometry
+    if g is None:
+        return ""
+    bits = []
+    if g.feature_kind and g.feature_kind != "unknown":
+        bits.append(f"feature {g.feature_kind}")
+    if g.surface_type and g.surface_type != "unknown":
+        bits.append(f"{g.surface_type} surface")
+    if g.nominal_diameter:
+        bits.append(f"nominal Ø{g.nominal_diameter * 1000.0:.4g} mm")
+    if g.is_internal is not None:
+        bits.append("internal (hole/bore)" if g.is_internal else "external (boss/shaft)")
+    if g.hole_standard:
+        bits.append(f"hole standard {g.hole_standard}")
+    return ("Geometry context: " + "; ".join(bits) + ".") if bits else ""
+
+
+def _parse_geometric(items) -> Tuple[GeometricTolerance, ...]:
+    """Parse the LLM's optional ``geometric`` array into GeometricTolerances.
+
+    Defensive: silently drops any frame with an unknown characteristic, a
+    non-numeric zone, or a malformed datum, so one bad entry never sinks the
+    whole prediction (the caller already falls back to the constant policy on a
+    hard parse error). Zone values arrive in mm and convert to metres.
+    """
+    if not items:
+        return ()
+    out = []
+    for it in items:
+        try:
+            symbol = str(it["symbol"]).strip().lower()
+            if symbol not in GEOMETRIC_SYMBOLS:
+                continue
+            zone = abs(float(it["zone"])) / 1000.0
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(GeometricTolerance(
+            symbol=symbol,
+            zone_value=zone,
+            diameter_zone=bool(it.get("diameter_zone", False)),
+            material_condition=normalize_condition(it.get("material_condition")),
+            datum_refs=_parse_datums(it.get("datums")),
+        ))
+    return tuple(out)
+
+
+def _parse_datums(items) -> Tuple[DatumRef, ...]:
+    if not items:
+        return ()
+    refs = []
+    for d in items:
+        try:
+            letter = str(d["letter"]).strip().upper()[:1]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if letter:
+            refs.append(DatumRef(letter=letter, modifier=normalize_condition(d.get("modifier"))))
+    return tuple(refs)

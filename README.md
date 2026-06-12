@@ -38,7 +38,7 @@ python sw-tolerance\tolerance.py C:\drawings\bracket.slddrw C:\drawings\bracket_
 
 SolidWorks does not need to be open beforehand — the CLI launches it via COM. The first run after installing pywin32 may take a few seconds longer while it builds the SolidWorks type-library cache.
 
-A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, and `error`.
+A per-run JSONL report is written to `<output.slddrw>.report.jsonl`. The first line is a header (`schema_version`, `active_config`, `input`, `tool_version`, `policy`); each subsequent line is one record per dimension with `feature`, `action` (`applied` / `skipped` / `failed`), `tolerance`, `geometric` (the GD&T frames written for that feature, each with its own `action`/`error`), `error`, and `rationale`.
 
 ## Harvest training data
 
@@ -54,7 +54,7 @@ Example:
 python sw-tolerance\harvest.py C:\drawings\historical C:\datasets\tolerances.jsonl
 ```
 
-It walks every `.slddrw` directly in `<input_dir>`, and for each linear dimension that already carries a tolerance, writes one record `{source_file, feature, label}`. The first line is a header (`schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`). A bad drawing is logged and skipped so the rest of the batch still produces a dataset (exit code 2 signals that some files failed).
+It walks every `.slddrw` directly in `<input_dir>` and writes one record per existing tolerance, each tagged with a `label_type`: **`"dimensional"`** for a ± band an engineer applied to a dimension (`label` is a `Tolerance`), and **`"geometric"`** for an existing GD&T feature control frame (`label` is a `GeometricTolerance`, and the input `feature` is the 3D geometry the frame attaches to). The first line is a header (`schema_version`, `kind: "training_dataset"`, `tool_version`, `input_dir`). A bad drawing is logged and skipped so the rest of the batch still produces a dataset (exit code 2 signals that some files failed).
 
 The recorded `feature.current_tolerance_type` is normalised to "untoleranced" — i.e. what the model will see at inference time — so harvesting a toleranced dim never leaks the answer into the inputs. The real tolerance lives in `label`.
 
@@ -64,7 +64,7 @@ The recorded `feature.current_tolerance_type` is normalised to "untoleranced" �
 |------|---------|
 | 0 | All dimensions handled (applied + skipped, no failures) |
 | 1 | Unrecoverable: SolidWorks unavailable, `OpenDoc6` failed, or `SaveAs3` failed |
-| 2 | Ran with per-dim apply failures (partial result still saved) |
+| 2 | Ran with per-item write failures — a dimensional ± or a GD&T frame failed (partial result still saved) |
 | 3 | Validation error: bad path, output already exists, or input == output |
 
 ## Architecture
@@ -108,11 +108,13 @@ sw-tolerance\
 ├── harvest.py               CLI entry: read-only training-data harvester
 ├── requirements.txt
 ├── sw_tolerance\
-│   ├── models.py            Feature, Tolerance, SW_* constants
+│   ├── models.py            Feature, GeometryContext, Tolerance, SW_* constants
 │   ├── decide.py            pure policy — the swap point
 │   ├── sw_client.py         COM connect + open/close lifecycle
-│   ├── extract.py           sheets -> views -> dims; read_existing_tolerance
-│   └── apply.py             tolerance write, rebuild + SaveAs3
+│   ├── extract.py           sheets -> views -> dims + GD&T frames (read)
+│   ├── geometry.py          resolve 3D-model context behind each dimension
+│   ├── gtol_text.py         GD&T frame-text codec (encode + decode, one place)
+│   └── apply.py             tolerance + GD&T frame write, rebuild + save
 ├── tests\                   decide, com, apply, validate, harvest, read-tol
 └── test_drawings\           drop fixture .slddrw files here
 ```

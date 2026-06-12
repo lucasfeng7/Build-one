@@ -11,8 +11,18 @@ from __future__ import annotations
 
 import unittest
 
-from sw_tolerance.apply import write_tolerance
-from sw_tolerance.models import SW_TOL_BILAT, Tolerance
+from sw_tolerance.apply import (
+    GtolWriteFailed,
+    write_geometric_tolerance,
+    write_tolerance,
+)
+from sw_tolerance.gtol_text import build_geometric_tolerance, frame_values
+from sw_tolerance.models import (
+    SW_TOL_BILAT,
+    DatumRef,
+    GeometricTolerance,
+    Tolerance,
+)
 
 
 class _FakeTol:
@@ -90,6 +100,82 @@ class WriteToleranceTests(unittest.TestCase):
         tol = _FakeTol(setvalues2_raises=True)
         write_tolerance(tol, _TOL)
         self.assertEqual(len(tol.setvalues_calls), 1)
+
+
+# --- geometric (GD&T) frame writing -----------------------------------------
+
+class FrameValuesTests(unittest.TestCase):
+    def test_position_with_diameter_and_datums(self):
+        g = GeometricTolerance(
+            symbol="position", zone_value=0.0002, diameter_zone=True,
+            material_condition="MMC",
+            datum_refs=(DatumRef("A"), DatumRef("B", "MMC")),
+        )
+        self.assertEqual(frame_values(g), ["position", "⌀0.2(M)", "A", "B(M)"])
+
+    def test_flatness_plain(self):
+        g = GeometricTolerance(symbol="flatness", zone_value=0.00005)
+        self.assertEqual(frame_values(g), ["flatness", "0.05"])
+
+    def test_round_trips_through_the_harvest_parser(self):
+        # frame_values (encode) is the inverse of build_geometric_tolerance
+        # (decode) — both sides of the gtol_text codec: encoding then parsing
+        # must reproduce the original frame.
+        original = GeometricTolerance(
+            symbol="perpendicularity", zone_value=0.0001, diameter_zone=False,
+            material_condition="LMC",
+            datum_refs=(DatumRef("A"), DatumRef("C", "MMC")),
+        )
+        parsed = build_geometric_tolerance(frame_values(original))
+        self.assertEqual(parsed, original)
+
+
+class _FakeGtolObj:
+    def __init__(self):
+        self.frames = []
+
+    def SetFrameValues2(self, frame, values):
+        self.frames.append((frame, list(values)))
+
+
+class _FakeExt:
+    def __init__(self, gtol_obj):
+        self._gtol_obj = gtol_obj
+
+    def InsertGtol(self):
+        return self._gtol_obj
+
+
+class _FakeModel:
+    def __init__(self, gtol_obj):
+        self.Extension = _FakeExt(gtol_obj)
+
+
+class _FakeDispDim:
+    def __init__(self):
+        self.selected = False
+
+    def Select2(self, append, mark):
+        self.selected = True
+        return True
+
+
+class WriteGeometricToleranceTests(unittest.TestCase):
+    def test_inserts_and_populates_first_frame(self):
+        gtol_obj = _FakeGtolObj()
+        model = _FakeModel(gtol_obj)
+        disp = _FakeDispDim()
+        g = GeometricTolerance(symbol="position", zone_value=0.0002,
+                               diameter_zone=True, datum_refs=(DatumRef("A"),))
+        write_geometric_tolerance(model, disp, g)
+        self.assertTrue(disp.selected)
+        self.assertEqual(gtol_obj.frames, [(0, ["position", "⌀0.2", "A"])])
+
+    def test_raises_when_insert_returns_none(self):
+        model = _FakeModel(None)
+        with self.assertRaises(GtolWriteFailed):
+            write_geometric_tolerance(model, _FakeDispDim(),
+                                      GeometricTolerance(symbol="flatness", zone_value=0.0001))
 
 
 if __name__ == "__main__":
